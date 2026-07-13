@@ -56,6 +56,22 @@ RSpec.describe 'exe/mutation_test CLI' do
     end
   end
 
+  describe '--worker-env per-worker database isolation' do
+    it 'documents the flag in the help output' do
+      output, status = run_cli('--help')
+
+      expect(status).to eq(0)
+      expect(output).to match(/--worker-env NAME/)
+    end
+
+    it 'announces that the in-memory runner is skipped so each worker isolates its database' do
+      output, status = run_cli('-p', '2', '--worker-env', 'TEST_ENV_NUMBER', CLI_SOURCE, CLI_SPEC)
+
+      expect(status).to eq(0)
+      expect(output).to match(/--worker-env TEST_ENV_NUMBER is set.*fork runner/m)
+    end
+  end
+
   describe 'argument and file validation' do
     it 'exits 1 with a usage message when no input files are given' do
       output, status = run_cli

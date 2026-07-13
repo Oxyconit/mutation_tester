@@ -206,6 +206,7 @@ mutation_test [OPTIONS] --glob 'lib/**/*.rb'
 | `--spec-glob TEMPLATE` | Spec-mapping template with a `{name}` placeholder (default: `spec/{name}_spec.rb`). Requires a positional `FILE` list, `--staged`, or `--glob`. |
 | `--since REV` | Incremental batch mode: mutate only the files matched by `--glob` that changed since git revision `REV` (new files count as changed). Requires `--glob`. See [Incremental mode](#incremental-mode-mutate-only-what-changed). |
 | `--fail-fast` | Stop the run at the first surviving mutant and finish with a failing status. Works in single-file mode and with `--glob`. |
+| `--worker-env NAME` | Set environment variable `NAME` to a distinct per-worker value before each parallel worker boots (`parallel_tests` `TEST_ENV_NUMBER` convention: worker 0 -> `""`, worker N -> `N+1`), so a `parallel_tests`-style `database.yml` selects a per-worker database. You provision the databases (e.g. `rake parallel:prepare`). Not supported by the `in_memory` runner (it falls back to `fork`). See [Making parallelism work with Rails](#making-parallelism-work-with-rails). |
 | `--strict-equality` | Enable the opt-in strict-equality probes (`==` → `eql?` and `==` → `equal?`). Default off; expect noise on code that does not distinguish numeric types or object identity. See [Strict Equality Mutations](docs/mutation-types.md#strict-equality-mutations-opt-in). |
 | `-h, --help` | Show help message. |
 | `-v, --version` | Show version. |
@@ -508,18 +509,52 @@ Force **serial execution with `-p 1`** for:
 
 ### Making parallelism work with Rails
 
-If you really want to run mutation tests in parallel for your Rails app, you need to ensure your tests don't conflict
-over the database.
+Parallel workers get an isolated filesystem (each mutant runs in its own shadow workspace), but they share one
+**database** unless you give each worker its own. If your app is already set up for `parallel_tests` (a `database.yml`
+keyed on `TEST_ENV_NUMBER` and per-worker databases created with `rake parallel:prepare`), `--worker-env` bridges the
+gem to that setup so you can run parallel instead of serial.
 
-**Strategies:**
+**`--worker-env NAME`** sets the environment variable `NAME` to a distinct value in each worker before it boots its
+test environment, following the `parallel_tests` `TEST_ENV_NUMBER` convention:
 
-1. **Use `parallel_tests` gem**: Setup multiple databases (e.g., `test_db_1`, `test_db_2`) so each process has its own.
-2. **Use In-Memory SQLite**: For unit tests that don't need advanced DB features, switch to SQLite in memory.
-3. **Transactional Cleanup**: Ensure `DatabaseCleaner` or Rails transactional fixtures are working correctly across
+| Worker | `TEST_ENV_NUMBER` | Database (example) |
+|---|---|---|
+| 0 | `""` (empty) | `myapp_test` |
+| 1 | `"2"` | `myapp_test2` |
+| 2 | `"3"` | `myapp_test3` |
+
+You provision the databases; the gem only sets the variable. A single mutant run does not create or migrate anything.
+
+**Worked example** (a `parallel_tests`-ready Rails app):
+
+```bash
+# 1. Provision one test database per worker (once, and after schema changes)
+RAILS_ENV=test bundle exec rake parallel:prepare
+
+# 2. Run mutation testing in parallel, one database per worker
+bundle exec mutation_test app/models/user.rb spec/models/user_spec.rb \
+  -p 4 --worker-env TEST_ENV_NUMBER
+
+# Batch over a whole directory the same way
+bundle exec mutation_test --glob 'app/models/**/*.rb' --spec-glob 'spec/models/{name}_spec.rb' \
+  -p 4 --worker-env TEST_ENV_NUMBER
+```
+
+`MUTATION_TESTER_WORKER_ENV=TEST_ENV_NUMBER` is equivalent to passing the flag.
+
+**Runner support.** `--worker-env` works with the `fork` and `spawn` runners, where each mutant boots its test
+environment freshly and picks up the variable. The `in_memory` runner clones a single preloaded worker that has already
+connected to one database, so it cannot isolate a per-worker database; when `--worker-env` is set the runner selection
+skips `in_memory` and uses `fork`, announcing the reason on stderr.
+
+**Still simplest without a parallel database setup:** if you have not provisioned per-worker databases, keep Rails
+model runs on serial `-p 1`. `--worker-env` is only useful once the databases exist.
+
+**Other strategies** if you are not using `parallel_tests`:
+
+1. **In-Memory SQLite**: For unit tests that don't need advanced DB features, switch to SQLite in memory.
+2. **Transactional Cleanup**: Ensure `DatabaseCleaner` or Rails transactional fixtures are working correctly across
    processes (though this is often insufficient for parallel processes).
-
-*Recommendation: Stick to serial execution for Rails models unless you have a specific need for speed and a robust
-parallel test setup.*
 
 ### Execution runners (fork, spawn, in-memory)
 

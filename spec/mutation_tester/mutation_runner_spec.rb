@@ -42,6 +42,18 @@ RSpec.describe MutationTester::MutationRunner do
     end
   end
 
+  describe '#in_memory_first? with a worker-env override' do
+    it 'is true in auto mode when no worker-env var is configured' do
+      expect(runner.in_memory_first?).to be(true)
+    end
+
+    it 'opts out of the in-memory runner once a worker-env var is set' do
+      config.worker_env_var = 'TEST_ENV_NUMBER'
+
+      expect(runner.in_memory_first?).to be(false)
+    end
+  end
+
   describe '#run parallel progress reporting' do
     let(:config) do
       cfg = MutationTester::Configuration.new
@@ -1050,6 +1062,19 @@ RSpec.describe MutationTester::MutationRunner do
 
         expect(results.map { |r| r[:status] }).to eq([:killed])
       end
+    end
+
+    it 'skips the in-memory runner and announces the fork fallback when a worker-env var is set' do
+      config = build_config(:auto)
+      config.worker_env_var = 'TEST_ENV_NUMBER'
+      runner = described_class.new(source_file, spec_file, original_source, config)
+      expect(runner).not_to receive(:prepare_in_memory_execution)
+
+      results = nil
+      expect { results = Dir.chdir(project_root) { runner.run([mutations[0], mutations[2]]) } }
+        .to output(/--worker-env TEST_ENV_NUMBER is set.*in-memory runner is skipped.*fork runner/m).to_stderr
+
+      expect(results.map { |r| r[:status] }).to eq(%i[killed survived])
     end
   end
 

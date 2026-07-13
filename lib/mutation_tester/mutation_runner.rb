@@ -49,6 +49,7 @@ module MutationTester
     end
 
     def run(mutations, &progress_callback)
+      announce_worker_env_in_memory_opt_out
       if in_memory_first? && @config.parallel_processes > 1
         run_in_memory_parallel(mutations, &progress_callback)
       elsif in_memory_first?
@@ -61,6 +62,8 @@ module MutationTester
     end
 
     def in_memory_first?
+      return false if @config.worker_env_var
+
       %i[in_memory auto].include?(@config.runner)
     end
 
@@ -451,6 +454,13 @@ module MutationTester
       warn "[MutationTester] In-memory execution is unavailable: #{reason}. Falling back to file-based execution (#{label})."
     end
 
+    def announce_worker_env_in_memory_opt_out
+      return unless @config.worker_env_var
+      return unless %i[in_memory auto].include?(@config.runner)
+
+      warn "[MutationTester] --worker-env #{@config.worker_env_var} is set, so the in-memory runner is skipped (its clones share one preloaded database connection); using the fork runner for per-worker database isolation."
+    end
+
     def in_memory_apply_fallback(mutation, result, project_root, reason)
       root = project_root || discoverable_project_root
       return mark_error(result, MutationTester::Error.new(reason)) unless root
@@ -491,7 +501,17 @@ module MutationTester
     def prepare_worker_preloads(total)
       return unless test_command(@spec_file).fork_execution?
 
-      ForkRunner.prepare_pool([@config.parallel_processes, total].min, use_bundle_exec: @use_bundle_exec)
+      ForkRunner.prepare_pool(
+        [@config.parallel_processes, total].min,
+        use_bundle_exec: @use_bundle_exec,
+        env_for: worker_env_for
+      )
+    end
+
+    def worker_env_for
+      return nil unless @config.worker_env_var
+
+      ->(index) { @config.worker_env_assignment(index) }
     end
 
     def shadow_run_root
@@ -599,7 +619,8 @@ module MutationTester
         File.expand_path(spec_file),
         use_bundle_exec: @use_bundle_exec,
         runner: @config.runner,
-        example_filters: example_filters
+        example_filters: example_filters,
+        worker_env_var: @config.worker_env_var
       )
     end
   end

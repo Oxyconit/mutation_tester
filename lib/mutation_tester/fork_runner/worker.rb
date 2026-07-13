@@ -176,6 +176,7 @@ spawn_clone = lambda do |request, out|
     clone_out.sync = true
     out.close
     STDIN.reopen(File::NULL)
+    request['env']&.each { |name, value| ENV[name] = value }
     serve.call(input, clone_out)
   end
   Process.detach(child)

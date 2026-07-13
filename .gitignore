@@ -52,3 +52,6 @@ parallel_prototype.rb
 .DS_Store
 Thumbs.db
 /.ruby-lsp/
+
+# Local planning artifacts (kamil-tickets-planner), never committed
+.tickets/

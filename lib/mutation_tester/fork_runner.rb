@@ -30,13 +30,13 @@ module MutationTester
         registry[key] = checkout_pooled(use_bundle_exec) || boot(use_bundle_exec)
       end
 
-      def prepare_pool(count, use_bundle_exec:)
+      def prepare_pool(count, use_bundle_exec:, env_for: nil)
         return unless available?
 
         primary = acquire(use_bundle_exec: use_bundle_exec)
         return unless primary
 
-        refill_pool(use_bundle_exec, count, primary)
+        refill_pool(use_bundle_exec, count, primary, env_for: env_for)
       end
 
       def prepare_in_memory_pool(count, primary)
@@ -112,10 +112,14 @@ module MutationTester
         Parallel.worker_number if defined?(Parallel) && Parallel.respond_to?(:worker_number)
       end
 
-      def refill_pool(key, count, primary)
+      def refill_pool(key, count, primary, env_for: nil)
         entry = (pool[key] ||= { owner: Process.pid, runners: [] })
-        entry[:runners].map! { |runner| runner&.ready? ? runner : primary.fork_clone }
-        (count - entry[:runners].size).times { entry[:runners] << primary.fork_clone }
+        entry[:runners] = entry[:runners].each_with_index.map do |runner, index|
+          runner&.ready? ? runner : primary.fork_clone(env: env_for&.call(index))
+        end
+        entry[:runners].size.upto(count - 1) do |index|
+          entry[:runners] << primary.fork_clone(env: env_for&.call(index))
+        end
         entry[:runners]
       end
 
@@ -180,7 +184,7 @@ module MutationTester
       fail_worker
     end
 
-    def fork_clone
+    def fork_clone(env: nil)
       return nil unless ready?
       return nil unless File.respond_to?(:mkfifo)
 
@@ -190,7 +194,9 @@ module MutationTester
       File.mkfifo(job_path)
       File.mkfifo(events_path)
 
-      @job_writer.puts(JSON.generate('clone' => { 'job' => job_path, 'events' => events_path }))
+      clone_request = { 'job' => job_path, 'events' => events_path }
+      clone_request['env'] = env if env
+      @job_writer.puts(JSON.generate('clone' => clone_request))
       event = read_event(monotonic_time + CLONE_TIMEOUT)
       return nil unless event.is_a?(Hash) && event['event'] == 'cloned'
 

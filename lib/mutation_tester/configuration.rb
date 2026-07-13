@@ -9,7 +9,12 @@ module MutationTester
       [[Etc.nprocessors, AUTO_PARALLEL_CAP].min, 1].max
     end
 
-    attr_reader :parallel_processes, :runner
+    def self.worker_env_value(index)
+      number = index.to_i
+      number <= 0 ? '' : (number + 1).to_s
+    end
+
+    attr_reader :parallel_processes, :runner, :worker_env_var
 
     attr_accessor :timeout,
       :baseline_timeout,
@@ -27,6 +32,7 @@ module MutationTester
     def initialize
       self.parallel_processes = ENV['MUTATION_TESTER_PARALLEL_PROCESSES'] || self.class.auto_parallel_processes
       self.runner = ENV['MUTATION_TESTER_RUNNER'] || :auto
+      self.worker_env_var = ENV['MUTATION_TESTER_WORKER_ENV']
       @timeout = 30
       @baseline_timeout = 300
       @mutation_types = {
@@ -83,6 +89,17 @@ module MutationTester
         mode = :auto
       end
       @runner = mode
+    end
+
+    def worker_env_var=(value)
+      normalized = value.to_s.strip
+      @worker_env_var = normalized.empty? ? nil : normalized
+    end
+
+    def worker_env_assignment(index)
+      return nil unless @worker_env_var
+
+      { @worker_env_var => self.class.worker_env_value(index) }
     end
   end
 end

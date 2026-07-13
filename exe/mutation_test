@@ -72,6 +72,10 @@ OptionParser.new do |opts|
     options[:strict_equality] = true
   end
 
+  opts.on('--worker-env NAME', 'Set environment variable NAME to a distinct per-worker value before each parallel worker boots (parallel_tests TEST_ENV_NUMBER convention: worker 0 -> "", worker N -> N+1), so a parallel_tests-style database.yml selects a per-worker database. Provision the databases yourself (e.g. rake parallel:prepare). The in_memory runner cannot isolate a per-worker database, so this flag makes the runner fall back to fork.') do |name|
+    options[:worker_env] = name
+  end
+
   opts.on('-h', '--help', 'Show this help message') do
     puts opts
     exit
@@ -147,6 +151,7 @@ apply_configuration = lambda do
     config.reporters = selected_reporters if selected_reporters
     config.output_dir = options[:output_dir] if options[:output_dir]
     config.test_selection = false if options[:no_test_selection]
+    config.worker_env_var = options[:worker_env] if options.key?(:worker_env)
     config.fail_fast = options.fetch(:fail_fast, false)
     config.mutation_types[:strict_equality] = true if options[:strict_equality]
 

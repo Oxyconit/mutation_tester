@@ -11,12 +11,13 @@ module MutationTester
 
     attr_reader :spec_file, :framework, :use_bundle_exec, :example_filters
 
-    def initialize(spec_file, use_bundle_exec:, framework: nil, runner: :spawn, example_filters: [])
+    def initialize(spec_file, use_bundle_exec:, framework: nil, runner: :spawn, example_filters: [], worker_env_var: nil)
       @spec_file = spec_file
       @framework = framework || self.class.detect_framework(spec_file)
       @use_bundle_exec = use_bundle_exec
       @runner = runner
       @example_filters = @framework == :rspec ? Array(example_filters) : []
+      @worker_env_var = worker_env_var
     end
 
     def argv
@@ -47,7 +48,7 @@ module MutationTester
       spawn_options = { pgroup: true, %i[out err] => File::NULL }
       spawn_options[:chdir] = chdir if chdir
 
-      pid = Process.spawn(*argv, spawn_options)
+      pid = Process.spawn(*spawn_argv, spawn_options)
       wait_with_deadline(pid, timeout)
     end
 
@@ -79,6 +80,18 @@ module MutationTester
 
     private
 
+    def spawn_argv
+      overrides = worker_env_overrides
+      overrides ? [overrides, *argv] : argv
+    end
+
+    def worker_env_overrides
+      return nil unless @worker_env_var
+
+      index = defined?(Parallel) && Parallel.respond_to?(:worker_number) ? Parallel.worker_number : nil
+      { @worker_env_var => Configuration.worker_env_value(index) }
+    end
+
     def runner
       @framework == :minitest ? 'ruby' : 'rspec'
     end
@@ -92,7 +105,7 @@ module MutationTester
       spawn_options = { pgroup: true, %i[out err] => log.path }
       spawn_options[:chdir] = chdir if chdir
 
-      pid = Process.spawn(*argv, spawn_options)
+      pid = Process.spawn(*spawn_argv, spawn_options)
       result = wait_with_deadline(pid, timeout)
       result.output = File.read(log.path)
       result

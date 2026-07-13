@@ -162,6 +162,72 @@ RSpec.describe MutationTester::Configuration do
     end
   end
 
+  describe '#worker_env_var' do
+    around do |example|
+      saved = ENV['MUTATION_TESTER_WORKER_ENV']
+      ENV.delete('MUTATION_TESTER_WORKER_ENV')
+      example.run
+    ensure
+      if saved.nil?
+        ENV.delete('MUTATION_TESTER_WORKER_ENV')
+      else
+        ENV['MUTATION_TESTER_WORKER_ENV'] = saved
+      end
+    end
+
+    it 'defaults to nil so the feature stays off' do
+      expect(described_class.new.worker_env_var).to be_nil
+    end
+
+    it 'reads the default from MUTATION_TESTER_WORKER_ENV' do
+      ENV['MUTATION_TESTER_WORKER_ENV'] = 'TEST_ENV_NUMBER'
+
+      expect(described_class.new.worker_env_var).to eq('TEST_ENV_NUMBER')
+    end
+
+    it 'normalizes a blank or whitespace value to nil' do
+      config = described_class.new
+      config.worker_env_var = '   '
+
+      expect(config.worker_env_var).to be_nil
+    end
+
+    it 'survives a merge round trip without leaking back to the source' do
+      config = described_class.new
+      merged = config.merge(worker_env_var: 'TEST_ENV_NUMBER')
+
+      expect(merged.worker_env_var).to eq('TEST_ENV_NUMBER')
+      expect(config.worker_env_var).to be_nil
+    end
+  end
+
+  describe '.worker_env_value' do
+    it 'follows the parallel_tests TEST_ENV_NUMBER convention' do
+      expect(described_class.worker_env_value(0)).to eq('')
+      expect(described_class.worker_env_value(1)).to eq('2')
+      expect(described_class.worker_env_value(2)).to eq('3')
+    end
+
+    it 'treats a nil or negative worker index as the first worker' do
+      expect(described_class.worker_env_value(nil)).to eq('')
+      expect(described_class.worker_env_value(-1)).to eq('')
+    end
+  end
+
+  describe '#worker_env_assignment' do
+    it 'returns nil when no worker-env var is configured' do
+      expect(described_class.new.worker_env_assignment(1)).to be_nil
+    end
+
+    it 'maps the configured var to the per-worker value' do
+      config = described_class.new
+      config.worker_env_var = 'TEST_ENV_NUMBER'
+
+      expect(config.worker_env_assignment(0)).to eq('TEST_ENV_NUMBER' => '')
+      expect(config.worker_env_assignment(1)).to eq('TEST_ENV_NUMBER' => '2')
+    end
+  end
+
   describe '#merge isolation (deep copy of mutable collections)' do
     it 'does not leak an in-place mutation of the copy back into the source' do
       config = described_class.new

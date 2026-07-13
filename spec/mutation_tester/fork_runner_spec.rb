@@ -112,6 +112,54 @@ RSpec.describe MutationTester::ForkRunner do
       expect(refilled[1]).to equal(kept)
     end
 
+    it 'hands each pooled clone its own environment value from env_for' do
+      Dir.mktmpdir do |dir|
+        probe_spec = File.join(dir, 'probe_spec.rb')
+        File.write(probe_spec, <<~RUBY)
+          RSpec.describe('probe') do
+            it('records the worker env value') do
+              File.write(File.join(#{dir.inspect}, "seen-\#{ENV['MT_ENV_PROBE']}.txt"), 'x')
+              expect(1).to eq(1)
+            end
+          end
+        RUBY
+
+        runners = described_class.prepare_pool(
+          2,
+          use_bundle_exec: false,
+          env_for: ->(index) { { 'MT_ENV_PROBE' => MutationTester::Configuration.worker_env_value(index) } }
+        )
+
+        runners[0].execute(probe_spec, timeout: 30)
+        runners[1].execute(probe_spec, timeout: 30)
+
+        expect(File.exist?(File.join(dir, 'seen-.txt'))).to be(true)
+        expect(File.exist?(File.join(dir, 'seen-2.txt'))).to be(true)
+      end
+    end
+
+    it 'sets no per-worker environment value when env_for is omitted' do
+      Dir.mktmpdir do |dir|
+        probe_spec = File.join(dir, 'probe_spec.rb')
+        File.write(probe_spec, <<~RUBY)
+          RSpec.describe('probe') do
+            it('records the worker env value') do
+              File.write(File.join(#{dir.inspect}, "plain-\#{ENV['MT_ENV_PROBE']}.txt"), 'x')
+              expect(1).to eq(1)
+            end
+          end
+        RUBY
+
+        runners = described_class.prepare_pool(2, use_bundle_exec: false)
+
+        runners[0].execute(probe_spec, timeout: 30)
+        runners[1].execute(probe_spec, timeout: 30)
+
+        expect(File.exist?(File.join(dir, 'plain-.txt'))).to be(true)
+        expect(File.exist?(File.join(dir, 'plain-2.txt'))).to be(false)
+      end
+    end
+
     it 'falls back to booting a fresh worker when the pooled clone was discarded' do
       clone = described_class.prepare_pool(1, use_bundle_exec: false).first
       clone.shutdown

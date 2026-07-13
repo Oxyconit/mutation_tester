@@ -200,6 +200,52 @@ RSpec.describe MutationTester::TestCommand do
     end
   end
 
+  describe '#run per-worker environment injection' do
+    it 'prepends an env hash keyed on Parallel.worker_number when a worker-env var is set' do
+      allow(Parallel).to receive(:worker_number).and_return(1)
+      cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, worker_env_var: 'TEST_ENV_NUMBER')
+
+      captured = nil
+      allow(Process).to receive(:spawn).and_wrap_original do |original, *args|
+        captured = args.first
+        original.call('true')
+      end
+
+      cmd.run
+
+      expect(captured).to eq('TEST_ENV_NUMBER' => '2')
+    end
+
+    it 'uses the empty first-worker value outside a parallel block' do
+      allow(Parallel).to receive(:worker_number).and_return(nil)
+      cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, worker_env_var: 'TEST_ENV_NUMBER')
+
+      captured = nil
+      allow(Process).to receive(:spawn).and_wrap_original do |original, *args|
+        captured = args.first
+        original.call('true')
+      end
+
+      cmd.run
+
+      expect(captured).to eq('TEST_ENV_NUMBER' => '')
+    end
+
+    it 'prepends no env hash when no worker-env var is set' do
+      cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false)
+
+      captured = nil
+      allow(Process).to receive(:spawn).and_wrap_original do |original, *args|
+        captured = args.first
+        original.call('true')
+      end
+
+      cmd.run
+
+      expect(captured).not_to be_a(Hash)
+    end
+  end
+
   describe '#run output capture' do
     let(:cmd) { described_class.new('spec/foo_spec.rb', use_bundle_exec: false) }
 
