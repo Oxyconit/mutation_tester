@@ -1,19 +1,31 @@
 require 'tmpdir'
+require 'bundler'
 
-# Helper for the specs that prove mutant deadlines are enforced even when the
-# coreutils `timeout` binary is unavailable.
+# Environment setup for the specs that prove mutant deadlines are enforced even
+# when the coreutils `timeout` binary is unavailable. Two independent hazards
+# make a naive setup pass locally yet fail on CI; both are handled here.
 #
-# The naive approach (drop every PATH directory that contains `timeout`) is
-# wrong on Linux: there `timeout` lives in /usr/bin and /bin alongside git, sh
-# and other tools the spawned test subprocess needs. Removing those whole
-# directories makes the mutant child crash on startup (e.g. the gemspec shells
-# out to `git ls-files`) long before it reaches the infinite loop, so it exits
-# fast and is misclassified as killed-not-timeout. On macOS the same code was a
-# no-op only because no `timeout` binary exists there by default.
+# 1. Removing `timeout` from PATH must not take the rest of the directory with
+#    it. The naive approach (drop every PATH directory that contains `timeout`)
+#    is wrong on Linux: there `timeout` lives in /usr/bin and /bin alongside
+#    git, sh and the other tools the spawned test subprocess needs. Dropping
+#    those whole directories makes the mutant child crash on startup long before
+#    it reaches the infinite loop, so it exits fast and is misclassified as
+#    killed-not-timeout. On macOS the same code was a no-op only because no
+#    `timeout` binary exists there by default. We instead remove exactly the
+#    `timeout` binary: any PATH directory that holds it is replaced by a shadow
+#    directory symlinking all of its entries except `timeout`.
 #
-# This helper instead removes exactly the `timeout` binary: any PATH directory
-# that holds it is replaced by a shadow directory symlinking all of its entries
-# except `timeout`, leaving git/sh/ruby reachable.
+# 2. The mutant test subprocess must be spawned unbundled. When these specs run
+#    under the gem's own dev bundle, the spawned child inherits BUNDLE_GEMFILE
+#    and `-rbundler/setup`, so it re-resolves our bundle on every spawn. On CI's
+#    prebuilt Ruby that re-resolution aborts on default gems whose native
+#    extensions are not built (json/prism/racc/rbs/...), and the child exits
+#    non-zero before reaching the infinite loop -> again misclassified as
+#    killed-not-timeout (deterministically on some Ruby lines, flakily on
+#    others via slow bundler startup racing the 2s deadline). A real global
+#    install spawns children unbundled, so we do the same with
+#    Bundler.with_unbundled_env, leaving the deadline as the only thing tested.
 module TimeoutBinaryEnv
   module_function
 
@@ -41,14 +53,18 @@ module TimeoutBinaryEnv
     ([shadow_bin] + kept).join(File::PATH_SEPARATOR)
   end
 
-  # Run the given block with `timeout` removed from PATH, restoring PATH after.
+  # Run the given block with the mutant-spawn environment these deadline specs
+  # need: unbundled (children spawn like a real install, not the dev bundle) and
+  # with the coreutils `timeout` binary removed from PATH. PATH is restored after.
   def without_timeout_binary
-    original_path = ENV['PATH']
-    Dir.mktmpdir('mt-no-timeout-bin') do |shadow_bin|
-      ENV['PATH'] = path_without_timeout(original_path, shadow_bin)
-      yield
+    Bundler.with_unbundled_env do
+      original_path = ENV['PATH']
+      Dir.mktmpdir('mt-no-timeout-bin') do |shadow_bin|
+        ENV['PATH'] = path_without_timeout(original_path, shadow_bin)
+        yield
+      end
+    ensure
+      ENV['PATH'] = original_path
     end
-  ensure
-    ENV['PATH'] = original_path
   end
 end

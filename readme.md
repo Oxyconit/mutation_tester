@@ -34,7 +34,7 @@ See [Getting Started](#getting-started) for the full quick start.
 
 Reference material lives under [`docs/`](docs): the full
 [mutation catalog](docs/mutation-types.md), the [JSON report schema](docs/json-schema.md),
-the [CI/CD recipes](docs/ci.md), and the [mutant benchmark](docs/benchmark.md).
+and the [CI/CD recipes](docs/ci.md).
 
 ## Features
 
