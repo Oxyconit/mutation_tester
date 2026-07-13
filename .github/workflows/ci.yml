@@ -38,8 +38,16 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: ${{ matrix.ruby }}
-          # Runs bundle install and caches the resolved gems between runs.
-          bundler-cache: true
+
+      - name: Install dependencies into the default GEM_HOME
+        # Deliberately NOT vendored (no bundler-cache / vendor/bundle). Several
+        # specs spawn the `mutation_test` exe and other helper subprocesses
+        # *outside* the project bundle to exercise the real global-install path.
+        # Those unbundled children can only resolve the gem's runtime deps
+        # (parser, unparser, ...) when the deps live in the default GEM_HOME
+        # rather than a bundler-only vendor/bundle path. This mirrors a real
+        # `gem install` and matches the local dev environment.
+        run: bundle install --jobs 4 --retry 3
 
       - name: Run full test suite (unit + integration + minitest)
         run: bundle exec rake test

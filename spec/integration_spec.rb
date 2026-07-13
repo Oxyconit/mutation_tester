@@ -2,6 +2,7 @@ require 'spec_helper'
 require 'fileutils'
 require 'tmpdir'
 require 'stringio'
+require_relative 'support/timeout_binary_env'
 
 RSpec.describe 'Integration' do
   let(:tmp_dir) { Dir.mktmpdir }
@@ -878,14 +879,7 @@ RSpec.describe 'Integration' do
 
   describe 'guaranteed mutant timeout without the external `timeout` binary' do
     around do |example|
-      original_path = ENV['PATH']
-      ENV['PATH'] = original_path
-        .split(File::PATH_SEPARATOR)
-        .reject { |dir| File.executable?(File.join(dir, 'timeout')) }
-        .join(File::PATH_SEPARATOR)
-      example.run
-    ensure
-      ENV['PATH'] = original_path
+      TimeoutBinaryEnv.without_timeout_binary { example.run }
     end
 
     def process_alive?(pid)

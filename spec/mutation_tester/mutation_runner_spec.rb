@@ -1,6 +1,7 @@
 require 'spec_helper'
 require 'tmpdir'
 require 'stringio'
+require_relative '../support/timeout_binary_env'
 
 RSpec.describe MutationTester::MutationRunner do
   let(:config) { MutationTester::Configuration.new }
@@ -298,14 +299,7 @@ RSpec.describe MutationTester::MutationRunner do
     after { FileUtils.remove_entry(tmp_dir) }
 
     around do |example|
-      original_path = ENV['PATH']
-      ENV['PATH'] = original_path
-        .split(File::PATH_SEPARATOR)
-        .reject { |dir| File.executable?(File.join(dir, 'timeout')) }
-        .join(File::PATH_SEPARATOR)
-      example.run
-    ensure
-      ENV['PATH'] = original_path
+      TimeoutBinaryEnv.without_timeout_binary { example.run }
     end
 
     def process_alive?(pid)
