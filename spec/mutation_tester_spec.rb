@@ -816,6 +816,11 @@ RSpec.describe 'MutationTester parser 3.3 syntax support' do
   end
 
   it 'parses and mutates a file using Ruby 3.1+ syntax on the supported 3.3 line' do
+    # The shorthand hash `{ a:, b: }` is Ruby 3.1 syntax; Parser::CurrentRuby
+    # follows the running Ruby, so parser/ruby30 cannot parse it. The capability
+    # genuinely does not exist on Ruby 3.0, so skip there rather than fail.
+    skip 'Ruby 3.1+ shorthand hash syntax is unparseable on Ruby 3.0' if Gem::Version.new(RUBY_VERSION) < Gem::Version.new('3.1')
+
     source = "def totals(a, b)\n  { a:, b:, sum: a + b }\nend\n"
 
     ast = Parser::CurrentRuby.parse(source)
