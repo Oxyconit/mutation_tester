@@ -50,7 +50,13 @@ module TimeoutBinaryEnv
         File.symlink(File.join(dir, name), link)
       end
     end
-    ([shadow_bin] + kept).join(File::PATH_SEPARATOR)
+    # shadow_bin goes LAST so the kept directories keep priority. A timeout dir
+    # like /usr/bin also carries the system `ruby`; if shadow_bin came first a
+    # spawned `#!/usr/bin/env ruby` binstub (e.g. rspec) would resolve to that
+    # system Ruby instead of the toolchain Ruby in the kept dirs, fail to find
+    # its gems, and exit before the mutant deadline. shadow_bin only backfills
+    # the tools (git, sh) that lived solely in the removed timeout dirs.
+    (kept + [shadow_bin]).join(File::PATH_SEPARATOR)
   end
 
   # Run the given block with the mutant-spawn environment these deadline specs
