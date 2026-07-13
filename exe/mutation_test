@@ -1,0 +1,340 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+def project_bundle_state
+  require 'bundler'
+  Bundler.definition.dependencies.any? { |dep| dep.name == 'mutation_tester' } ? :in_bundle : :outside
+rescue LoadError, StandardError
+  :no_gemfile
+end
+
+case project_bundle_state
+when :in_bundle then require 'bundler/setup'
+when :outside then warn 'mutation_tester loaded outside the project bundle'
+end
+
+require 'mutation_tester'
+require 'optparse'
+
+KNOWN_REPORTERS = %i[console html json].freeze
+
+options = { parallel: nil }
+
+OptionParser.new do |opts|
+  opts.banner = <<~BANNER
+    #{Rainbow("MutationTester").cyan.bold} - Improve your test quality through mutation testing
+
+    #{Rainbow("Usage:").bright}
+      mutation_test [OPTIONS] FILE...
+      mutation_test [OPTIONS] --staged
+      mutation_test [OPTIONS] SOURCE_FILE TEST_FILE
+      mutation_test [OPTIONS] --glob 'lib/**/*.rb'
+
+    #{Rainbow("Arguments:").bright}
+      FILE...        Ruby source files to mutate; each is mapped to its spec by convention (lib/X.rb -> spec/X_spec.rb, override with --spec-glob)
+      SOURCE_FILE TEST_FILE
+                     Explicit pair: exactly two arguments where the second is recognized as a test file (RSpec or Minitest)
+  BANNER
+
+  opts.on('-p', '--parallel N', Integer, "Run with N parallel processes (default: auto, derived from the CPU core count with a cap of #{MutationTester::Configuration::AUTO_PARALLEL_CAP}; -p 1 forces serial execution)") do |n|
+    options[:parallel] = n
+  end
+
+  opts.on('--runner MODE', 'Mutant execution runner: auto (default) tries in_memory first (RSpec with Process.fork available and a passing unmutated-source probe), then falls back to fork, then spawn, announcing every step down on stderr with its reason; fork (preloaded environment, RSpec on platforms with Process.fork), spawn (one full process per mutant) and in_memory (mutations applied in child-process memory, zero file writes per mutant, RSpec only) force the specific mode') do |mode|
+    options[:runner] = mode
+  end
+
+  opts.on('--no-test-selection', 'Disable two-phase test selection (always run the full test file for every mutant)') do
+    options[:no_test_selection] = true
+  end
+
+  opts.on('--staged', 'Mutation-test the files staged in git (git diff --cached --name-only; files staged as deleted are ignored), mapping each to its spec like a positional FILE list') do
+    options[:staged] = true
+  end
+
+  opts.on('--glob PATTERN', 'Batch mode: mutation-test every source file matching PATTERN, mapping each to its spec by convention (lib/X.rb -> spec/X_spec.rb)') do |pattern|
+    options[:glob] = pattern
+  end
+
+  opts.on('--spec-glob TEMPLATE', 'Spec-mapping template with a {name} placeholder (default: spec/{name}_spec.rb; e.g. test/{name}_test.rb). {name} is the source path minus a leading lib/ and the .rb extension. Requires a FILE list, --staged, or --glob.') do |template|
+    options[:spec_glob] = template
+  end
+
+  opts.on('--since REV', 'Incremental batch mode: mutate only the files matched by --glob that changed since git revision REV (new files count as changed). Requires --glob.') do |rev|
+    options[:since] = rev
+  end
+
+  opts.on('--fail-fast', 'Stop the run at the first surviving mutant and finish with a failing status') do
+    options[:fail_fast] = true
+  end
+
+  opts.on('--strict-equality', 'Enable strict equality probes (== to eql? and equal?); default off, expect noise on code that does not distinguish numeric types or object identity') do
+    options[:strict_equality] = true
+  end
+
+  opts.on('-h', '--help', 'Show this help message') do
+    puts opts
+    exit
+  end
+
+  opts.on('-v', '--version', 'Show version') do
+    puts "MutationTester v#{MutationTester::VERSION}"
+    exit
+  end
+
+  opts.on('--verbose', 'Show a per-mutation warning for every skipped mutation (quiet by default)') do
+    options[:verbose] = true
+  end
+
+  opts.on('--no-progress', 'Disable progress display') do
+    options[:no_progress] = true
+  end
+
+  opts.on('--json', 'Machine mode: print ONLY the JSON report to stdout (logs and progress go to stderr); a multi-file run (FILE list, --staged, --glob) prints one aggregate envelope with a survivors list') do
+    options[:json] = true
+  end
+
+  opts.on('--reporters LIST', Array, "Comma-separated reporters to run (#{KNOWN_REPORTERS.join(',')})") do |list|
+    options[:reporters] = list
+  end
+
+  opts.on('--output-dir PATH', 'Directory for the generated report files (default: tmp/mutation_reports)') do |dir|
+    options[:output_dir] = dir
+  end
+end.parse!
+
+json_mode = options.fetch(:json, false)
+
+Rainbow.enabled = false if json_mode
+
+emit_diagnostic = lambda do |*lines|
+  lines.each { |line| json_mode ? warn(line) : puts(line) }
+end
+
+usage_error = lambda do |message, hint|
+  warn Rainbow("❌ Error: #{message}").red
+  warn Rainbow("💡 #{hint}").yellow
+  exit 2
+end
+
+guard_interrupt = lambda do |&block|
+  block.call
+rescue Interrupt
+  warn 'Interrupted: run stopped, workspaces cleaned up, partial results discarded.'
+  exit 130
+end
+
+selected_reporters = nil
+if options[:reporters]
+  selected_reporters = options[:reporters].map { |name| name.strip.to_sym }
+  unknown = selected_reporters - KNOWN_REPORTERS
+  unless unknown.empty?
+    warn Rainbow("❌ Error: Unknown reporter(s): #{unknown.map(&:to_s).join(", ")}").red
+    warn Rainbow("💡 Valid reporters: #{KNOWN_REPORTERS.map(&:to_s).join(", ")}").yellow
+    exit 1
+  end
+end
+
+glob_mode = !options[:glob].nil?
+staged_mode = options.fetch(:staged, false)
+
+apply_configuration = lambda do
+  MutationTester.configure do |config|
+    config.parallel_processes = options[:parallel] if options[:parallel]
+    config.runner = options[:runner] if options[:runner]
+    config.verbose = options.fetch(:verbose, false)
+    config.show_progress = !options[:no_progress]
+    config.reporters = selected_reporters if selected_reporters
+    config.output_dir = options[:output_dir] if options[:output_dir]
+    config.test_selection = false if options[:no_test_selection]
+    config.fail_fast = options.fetch(:fail_fast, false)
+    config.mutation_types[:strict_equality] = true if options[:strict_equality]
+
+    if json_mode
+      config.reporters = []
+      config.show_progress = false
+    end
+  end
+end
+
+run_batch_machine = lambda do |batch, passed_for|
+  real_stdout = $stdout
+  $stdout = $stderr
+  begin
+    result = guard_interrupt.call { batch.run }
+  ensure
+    $stdout = real_stdout
+  end
+
+  passed = passed_for.call(result)
+  reporter = MutationTester::Reporters::BatchJsonReporter.new(result, MutationTester.configuration, passed: passed)
+  real_stdout.puts reporter.render
+  exit(passed ? 0 : 1)
+end
+
+if options[:since] && !glob_mode
+  usage_error.call('--since requires --glob (batch mode).',
+                   'Usage: mutation_test --glob "lib/**/*.rb" --since origin/main')
+end
+
+if staged_mode && glob_mode
+  usage_error.call('--staged cannot be combined with --glob.',
+                   'Use --staged for the git staging area or --glob for a pattern, not both.')
+end
+
+if staged_mode && !ARGV.empty?
+  usage_error.call('--staged cannot be combined with positional FILE arguments.',
+                   'With --staged the file list comes from the git staging area; drop the positional arguments.')
+end
+
+if glob_mode
+  unless ARGV.empty?
+    usage_error.call('SOURCE_FILE/TEST_FILE positional arguments cannot be combined with --glob.',
+                     'In batch mode the files come from --glob; drop the positional arguments.')
+  end
+
+  changed_files = nil
+  if options[:since]
+    begin
+      changed_files = MutationTester::BatchRunner.changed_files_since(options[:since])
+    rescue MutationTester::Error => e
+      warn Rainbow("❌ Error: --since #{options[:since]} is unusable: #{e.message}").red
+      warn Rainbow('💡 Run inside a git repository and pass an existing revision (e.g. origin/main or HEAD~1).').yellow
+      exit 2
+    end
+  end
+
+  apply_configuration.call
+
+  batch = MutationTester::BatchRunner.new(
+    glob: options[:glob],
+    spec_template: options[:spec_glob],
+    config: MutationTester.configuration,
+    since: options[:since],
+    changed_files: changed_files
+  )
+
+  run_batch_machine.call(batch, ->(result) { result.matched_any? && result.success? }) if json_mode
+
+  result = guard_interrupt.call { batch.run }
+
+  exit 1 unless result.matched_any?
+
+  exit(result.success? ? 0 : 1)
+end
+
+if !staged_mode && ARGV.empty?
+  emit_diagnostic.call(
+    Rainbow('❌ Error: No input files given').red,
+    Rainbow('💡 Usage: mutation_test FILE... | mutation_test --staged | mutation_test SOURCE_FILE TEST_FILE').yellow,
+    Rainbow('   Example: mutation_test lib/calculator.rb').cyan,
+    Rainbow('   Run with --help for more options').faint
+  )
+  exit 1
+end
+
+legacy_pair = !staged_mode && ARGV.length == 2 && MutationTester::BatchRunner.test_file?(ARGV[1])
+
+if options[:spec_glob] && legacy_pair
+  usage_error.call('--spec-glob does not apply to an explicit SOURCE_FILE TEST_FILE pair.',
+                   'Use --spec-glob with a positional FILE list, --staged, or --glob.')
+end
+
+if legacy_pair
+  source_file, test_file = ARGV
+else
+  sources = ARGV
+  if staged_mode
+    begin
+      sources = MutationTester::BatchRunner.staged_files
+    rescue MutationTester::Error => e
+      warn Rainbow("❌ Error: --staged is unusable: #{e.message}").red
+      warn Rainbow('💡 Run --staged inside a git repository with git installed.').yellow
+      exit 2
+    end
+
+    if sources.empty?
+      warn Rainbow('❌ Error: --staged found no staged files.').red
+      warn Rainbow('💡 Stage changes with git add first; files staged as deleted are ignored.').yellow
+      exit 1
+    end
+  end
+
+  single_file_json = json_mode && !staged_mode && sources.length == 1
+
+  if single_file_json
+    outcome = MutationTester::BatchRunner.new(files: sources, spec_template: options[:spec_glob]).classify(sources.first)
+    if outcome.is_a?(MutationTester::BatchRunner::SkippedEntry)
+      reason = MutationTester::BatchRunner::SKIP_REASONS.fetch(outcome.reason)
+      detail = outcome.expected_spec ? " (expected #{outcome.expected_spec})" : ''
+      warn Rainbow("❌ Error: #{sources.first} cannot be mutation-tested: #{reason}#{detail}").red
+      exit 1
+    end
+    source_file = sources.first
+    test_file = outcome
+  else
+    apply_configuration.call
+
+    batch = MutationTester::BatchRunner.new(
+      files: sources,
+      spec_template: options[:spec_glob],
+      config: MutationTester.configuration
+    )
+
+    run_batch_machine.call(batch, ->(result) { result.processed.any? && result.success? }) if json_mode
+
+    result = guard_interrupt.call { batch.run }
+
+    exit(result.processed.any? && result.success? ? 0 : 1)
+  end
+end
+
+unless File.exist?(source_file)
+  emit_diagnostic.call(
+    Rainbow("❌ Error: Source file not found: #{source_file}").red,
+    Rainbow('💡 Tip: Make sure the path is correct and the file exists').yellow
+  )
+  exit 1
+end
+
+unless File.exist?(test_file)
+  emit_diagnostic.call(
+    Rainbow("❌ Error: Test file not found: #{test_file}").red,
+    Rainbow('💡 Tip: Make sure the path is correct and the file exists').yellow
+  )
+  exit 1
+end
+
+apply_configuration.call
+
+core = MutationTester::Core.new(source_file, test_file)
+
+if json_mode
+  real_stdout = $stdout
+  $stdout = $stderr
+  begin
+    success = guard_interrupt.call { core.run }
+  ensure
+    $stdout = real_stdout
+  end
+
+  reporter = MutationTester::Reporters::JsonReporter.new(
+    core.results, core.source_file, core.spec_file, core.config, interrupted: core.interrupted?
+  )
+
+  unless core.results.empty?
+    FileUtils.mkdir_p(core.config.output_dir)
+    $stdout = $stderr
+    begin
+      reporter.generate
+    ensure
+      $stdout = real_stdout
+    end
+  end
+
+  real_stdout.puts reporter.render
+else
+  success = guard_interrupt.call { core.run }
+end
+
+exit(success ? 0 : 1)

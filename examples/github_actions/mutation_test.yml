@@ -1,0 +1,87 @@
+# Mutation testing in CI with GitHub Actions (mutation_tester gem).
+#
+# Copy this file to .github/workflows/mutation_test.yml in your project and you
+# have mutation testing running in CI in about five minutes. The workflow:
+#   1. checks out your code,
+#   2. installs Ruby and your bundle (with mutation_tester in it),
+#   3. runs mutation_test on your source file and its test file,
+#   4. uploads the HTML/JSON reports as a build artifact (even on failure),
+#   5. fails the job when the mutation score is below your threshold.
+#
+# Prerequisite: add the gem to your project's Gemfile so `bundle exec` finds it:
+#   bundle add mutation_tester --group development,test
+# (or add `gem "mutation_tester"` to your development/test group, then bundle install).
+#
+# Then look for the lines marked "EDIT:" and point them at your own files.
+
+name: Mutation Testing
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  mutation_test:
+    name: Mutation testing
+    runs-on: ubuntu-latest
+    # Mutation testing re-runs your suite once per mutant, so give the job more
+    # head-room than a normal test run. Tune this to your project's size.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          # EDIT: match the Ruby version your project uses.
+          ruby-version: '3.3'
+          # Runs `bundle install` and caches the resolved gems between runs.
+          bundler-cache: true
+
+      - name: Run mutation tests
+        # EDIT: replace with YOUR source file and its test file.
+        # The CLI exits non-zero when the score is below the threshold, which
+        # fails this step (and the job). That is your quality gate: no extra
+        # configuration needed.
+        run: bundle exec mutation_test app/models/user.rb spec/models/user_spec.rb
+        # OPTIONAL - run mutants in parallel to finish faster. This works out of
+        # the box (see MUTATION_TESTER_PARALLEL_PROCESSES). Enable it only if
+        # your tests do not share database state. Uncomment the two lines below:
+        # env:
+        #   MUTATION_TESTER_PARALLEL_PROCESSES: 4
+
+      # OPTIONAL - test several source/test pairs in one job. Uncomment and give
+      # each pair its own --output-dir so their reports do not overwrite each
+      # other. The job stops at the first pair that is below its threshold.
+      # - name: Run mutation tests (multiple files)
+      #   run: |
+      #     bundle exec mutation_test app/models/user.rb spec/models/user_spec.rb \
+      #       --output-dir tmp/mutation_reports/user
+      #     bundle exec mutation_test app/models/order.rb spec/models/order_spec.rb \
+      #       --output-dir tmp/mutation_reports/order
+
+      # OPTIONAL - incremental gate for pull requests: mutate only the files
+      # changed since the PR base branch and stop at the first surviving mutant.
+      # This keeps the job fast on large repos. Two edits are needed:
+      #   1. give the Checkout step the full history so git can diff against the
+      #      base branch:
+      #        with:
+      #          fetch-depth: 0
+      #   2. replace the "Run mutation tests" step with the incremental run:
+      # - name: Run mutation tests (changed files only)
+      #   if: github.event_name == 'pull_request'
+      #   run: |
+      #     bundle exec mutation_test --glob 'lib/**/*.rb' \
+      #       --since "origin/${{ github.base_ref }}" --fail-fast
+
+      - name: Upload mutation reports
+        # always() uploads the reports even when the gate failed the job, which
+        # is exactly when you want to inspect the surviving mutants.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-reports
+          # Default output_dir; change it if you pass a custom --output-dir above.
+          path: tmp/mutation_reports/

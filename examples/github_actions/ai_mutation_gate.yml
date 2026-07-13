@@ -1,0 +1,75 @@
+# AI mutation gate for GitHub Actions (mutation_tester gem). Runs mutation_test
+# --json, publishes the SURVIVING mutants (file/line/original/mutated = test
+# gaps) to the job summary and a survivors.json artifact for an AI agent, then
+# re-fails on a low score. Copy to .github/workflows/, edit "EDIT:" lines. Needs
+# jq (preinstalled on ubuntu runners); see mutation_test.yml for the plain gate.
+
+name: AI Mutation Gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mutation_gate:
+    name: AI mutation gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'   # EDIT: match your project's Ruby (floor is 3.0)
+          bundler-cache: true
+
+      - name: Run mutation tests (JSON report on stdout)
+        id: mutation
+        continue-on-error: true   # keep going so the worklist/artifact below still run
+        run: |
+          # EDIT: replace with YOUR source file and its test file.
+          bundle exec mutation_test --json \
+            app/models/user.rb spec/models/user_spec.rb > mutation_report.json
+
+      - name: Summarize surviving mutants (test gaps) in the job summary
+        if: always()
+        run: |
+          score=$(jq -r '.summary.mutation_score // "n/a"' mutation_report.json)
+          survivors=$(jq '[.mutations[] | select(.status == "survived")] | length' mutation_report.json)
+          {
+            echo "## Mutation gate"
+            echo "Score: **${score}%** - surviving mutants: **${survivors}**"
+            if [ "$survivors" -eq 0 ]; then
+              echo "No surviving mutants. No test gaps to close."
+            else
+              echo "| file | line | from | to |"
+              echo "|---|---|---|---|"
+              jq -r '.mutations[] | select(.status == "survived")
+                     | "| \(.file_path) | \(.line) | `\(.original)` | `\(.mutated)` |"' \
+                     mutation_report.json
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Extract survivors as a machine-readable worklist for an AI agent
+        if: always()
+        run: |
+          jq '[.mutations[] | select(.status == "survived")
+               | {file: .file_path, line: .line, from: .original, to: .mutated,
+                  source_line: .source_line, mutated_line: .mutated_line}]' \
+             mutation_report.json > survivors.json
+          cat survivors.json  # feed this worklist to your agent CLI
+
+      - name: Upload mutation report and survivor worklist
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: |
+            mutation_report.json
+            survivors.json
+
+      - name: Enforce the gate
+        if: steps.mutation.outcome == 'failure'   # non-zero run = score below threshold
+        run: exit 1

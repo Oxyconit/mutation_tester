@@ -1,0 +1,72 @@
+name: Release
+
+# Publish the gem to rubygems.org when a GitHub Release is published.
+#
+# Authentication uses OIDC Trusted Publishing, so no API key or other secret is
+# stored in this repository. The gem owner performs a one-time trusted-publisher
+# setup on rubygems.org (repository owner, repository name, and this workflow
+# file name, release.yml); see the "Releasing" section in readme.md.
+#
+# rubygems/release-gem is the higher-level action, but it runs `rake release`,
+# which pushes git tags and therefore needs contents: write. On a
+# release: published trigger the tag already exists, so this workflow uses the
+# lower-level trusted-publishing step (configure-rubygems-credentials + gem
+# build + gem push) and keeps contents read-only.
+on:
+  release:
+    types: [published]
+
+# OIDC needs id-token: write to mint the short-lived rubygems.org credential.
+# Nothing here writes to the repository, so contents stays read-only, and no
+# API-key secret is referenced anywhere in this workflow.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish gem (Trusted Publishing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          # A modern Ruby ships a RubyGems new enough for OIDC trusted
+          # publishing. Building the gemspec only loads
+          # lib/mutation_tester/version.rb (no runtime deps), so there is no
+          # bundle install here.
+          ruby-version: '3.3'
+
+      - name: Verify gem version matches the release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        # Fail before publishing when MutationTester::VERSION does not match the
+        # published Release tag. Tags are vX.Y.Z; the gem version is X.Y.Z, so a
+        # single leading "v" is stripped before comparing.
+        run: |
+          ruby <<'RUBY'
+          require "./lib/mutation_tester/version"
+          tag = ENV.fetch("RELEASE_TAG")
+          expected = tag.sub(/\Av/, "")
+          actual = MutationTester::VERSION
+          unless actual == expected
+            abort "Version mismatch: release tag #{tag} (=> #{expected}) != MutationTester::VERSION #{actual}. Bump lib/mutation_tester/version.rb or fix the tag before releasing."
+          end
+          puts "Version OK: #{actual} matches release tag #{tag}"
+          RUBY
+
+      - name: Configure OIDC trusted publishing credentials
+        # Exchanges the GitHub OIDC token for a short-lived rubygems.org
+        # credential and writes it for the following gem push. No secret needed.
+        uses: rubygems/configure-rubygems-credentials@v2.1.0
+
+      - name: Build gem
+        run: gem build mutation_tester.gemspec
+
+      - name: Publish gem to rubygems.org
+        # Uses the OIDC credential configured above; no stored API key.
+        run: gem push mutation_tester-*.gem

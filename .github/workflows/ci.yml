@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Ruby ${{ matrix.ruby }}
+    runs-on: ubuntu-latest
+    # Integration specs spawn real rspec/ruby subprocesses; the suite runs in
+    # ~25s locally, so a small cap catches a hang without punishing a slow runner.
+    timeout-minutes: 15
+    strategy:
+      # Report every version's result instead of cancelling the matrix on the
+      # first failure, so a version-specific regression is visible in one run.
+      fail-fast: false
+      matrix:
+        # required_ruby_version in the gemspec is ">= 3.0.0". Cover the floor
+        # (3.0), two intermediate minors, and the newest minor that
+        # ruby/setup-ruby ships for ubuntu-latest. Ruby 4.x has no
+        # ruby-builder binary for the GitHub-hosted runners yet, so it is not
+        # installable here; 4.x is exercised on the development host (4.0.2)
+        # and documented in readme.md rather than added as a broken matrix job.
+        ruby: ['3.0', '3.1', '3.2', '3.3']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve dependencies per Ruby version
+        # The committed Gemfile.lock pins the host (Ruby 4.x) resolution, whose
+        # unparser 0.8.x requires Ruby >= 3.1 and cannot install on the 3.0 job.
+        # This gem supports a Ruby range, so let each matrix version resolve its
+        # own compatible dependency set from the gemspec constraints instead.
+        run: rm -f Gemfile.lock
+
+      - name: Set up Ruby ${{ matrix.ruby }}
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          # Runs bundle install and caches the resolved gems between runs.
+          bundler-cache: true
+
+      - name: Run full test suite (unit + integration + minitest)
+        run: bundle exec rake test
+
+      - name: End-to-end example sanity check (both frameworks, serial + parallel)
+        # Exercises framework detection, baseline, kill/survive and exit code for
+        # RSpec and Minitest, and confirms parallel matches serial, on every
+        # Ruby in the matrix (AC4, AC6).
+        run: bundle exec rake example:rspec example:minitest example:rspec_parallel example:minitest_parallel
+
+  # E04S23: back the advertised "RSpec 3.x, Minitest 5.x/6.x" range with a real
+  # end-to-end mutation run against the BOUNDARY framework versions, resolved
+  # from alternate user-project bundles (gemfiles/*.gemfile) rather than the
+  # single versions the gem's own dev bundle happens to pin. The gem shells out
+  # to run the fixture's tests, so gemfiles/run_matrix.rb points only that test
+  # subprocess at the alternate bundle; the `minitest ~> 5.0` dev pin is untouched.
+  framework-matrix:
+    name: Framework ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Boundary versions: Minitest 6.x (needs Ruby >= 3.2) and the lowest
+        # supported RSpec 3.x line (3.0.x).
+        include:
+          - name: minitest-6
+            framework: minitest
+            gemfile: gemfiles/minitest6.gemfile
+          - name: rspec-3-low
+            framework: rspec
+            gemfile: gemfiles/rspec3_low.gemfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The committed Gemfile.lock pins the development host (Ruby 4.x); drop it
+      # so this job's Ruby re-resolves its own compatible set (see the test job).
+      - name: Resolve the host gem bundle from scratch
+        run: rm -f Gemfile.lock
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          # >= 3.2 so the Minitest 6.x bundle resolves; the low RSpec bundle
+          # installs anywhere. This job verifies the framework range, not the
+          # Ruby range (the test job above covers Ruby 3.0-3.3).
+          ruby-version: '3.3'
+          # Installs and caches the host gem bundle that run_matrix.rb loads.
+          bundler-cache: true
+
+      # Installs the boundary framework version into its own bundle, which the
+      # spawned test subprocess uses via BUNDLE_GEMFILE.
+      - name: Install the alternate framework bundle
+        run: BUNDLE_GEMFILE=${{ matrix.gemfile }} bundle install
+
+      # Green (exit 0) only when every mutant of the fixture is killed on the
+      # framework version resolved from the alternate bundle (AC1, AC2).
+      - name: End-to-end mutation run against the boundary framework version
+        run: bundle exec ruby gemfiles/run_matrix.rb ${{ matrix.framework }} ${{ matrix.gemfile }}

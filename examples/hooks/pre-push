@@ -1,0 +1,41 @@
+#!/bin/sh
+#
+# mutation_tester pre-push hook - block a push when the mutation score of your
+# target file(s) drops below THRESHOLD, so weak tests never reach the remote.
+#
+# Install:  cp examples/hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+#           (lefthook/overcommit users: call this script from your pre-push step)
+# Requires: jq (https://jqlang.github.io/jq/)
+# On a block it prints the surviving mutants (file:line, what changed) = the gaps.
+
+set -eu
+
+THRESHOLD=90   # EDIT: minimum mutation score (percent) required to allow the push
+report=$(mktemp)
+status=0
+
+# EDIT: the "SOURCE TEST" pairs to gate on, one per line. The loop reads this
+# heredoc (not a pipe), so it runs in the current shell and $status survives it.
+while read -r source test; do
+  [ -z "$source" ] && continue
+
+  # --json prints ONLY the JSON to stdout; we do our own jq threshold check, so
+  # ignore the CLI's own pass/fail exit here.
+  bundle exec mutation_test --json "$source" "$test" >"$report" || true
+
+  score=$(jq -r '.summary.mutation_score // empty' "$report")
+  if [ -z "$score" ] || jq -e --argjson t "$THRESHOLD" '.summary.mutation_score < $t' "$report" >/dev/null; then
+    echo "BLOCK: $source scored ${score:-no}% (< ${THRESHOLD}%). Surviving mutants (test gaps):" >&2
+    jq -r '.mutations[] | select(.status == "survived")
+           | "  \(.file_path):\(.line)  \(.original) -> \(.mutated)"' "$report" >&2
+    status=1
+  else
+    echo "OK: $source scored ${score}% (>= ${THRESHOLD}%)" >&2
+  fi
+done <<'PAIRS'
+app/models/user.rb spec/models/user_spec.rb
+PAIRS
+
+rm -f "$report"
+[ "$status" -eq 0 ] || echo "Push blocked by mutation gate. Close the gaps above or lower THRESHOLD." >&2
+exit "$status"
