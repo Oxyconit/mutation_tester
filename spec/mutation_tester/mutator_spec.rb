@@ -1010,4 +1010,84 @@ RSpec.describe MutationTester::Mutator, '(tables and switches)' do
       expect(mutations.select { |m| m[:type] == :nil_injection }).to be_empty
     end
   end
+
+  describe 'in-memory-safe classification by AST context' do
+    def safe_by_line(source)
+      mutations_for(source).group_by { |m| m[:line] }
+        .transform_values { |ms| ms.map { |m| m[:in_memory_safe] }.uniq }
+    end
+
+    it 'tags every mutation with a boolean in_memory_safe flag' do
+      mutations = mutations_for("class Foo\n  def bar(a)\n    a + 1\n  end\nend\n")
+
+      expect(mutations).not_to be_empty
+      expect(mutations.map { |m| m[:in_memory_safe] }).to all(be(true).or(be(false)))
+    end
+
+    it 'marks a method body defined directly in the class as in-memory-safe' do
+      by_line = safe_by_line("class Foo\n  def bar(a)\n    a + 1\n  end\nend\n")
+
+      expect(by_line[3]).to eq([true])
+    end
+
+    it 'marks a class-body constant as not in-memory-safe' do
+      by_line = safe_by_line("class Foo\n  RATE = 5\n  def bar(a)\n    a + RATE\n  end\nend\n")
+
+      expect(by_line[2]).to eq([false])
+      expect(by_line[4]).to eq([true])
+    end
+
+    it 'marks a method and macro inside included do as not in-memory-safe' do
+      source = <<~RUBY
+        module Sample
+          included do
+            validates :name
+            def helper(x)
+              x + 1
+            end
+          end
+        end
+      RUBY
+      by_line = safe_by_line(source)
+
+      expect(by_line.values.flatten.uniq).to eq([false])
+    end
+
+    it 'marks a method inside a class nested in a class-body block as not in-memory-safe' do
+      source = <<~RUBY
+        module Sample
+          included do
+            class Inner
+              def helper(x)
+                x + 1
+              end
+            end
+          end
+        end
+      RUBY
+      by_line = safe_by_line(source)
+
+      expect(by_line.values.flatten.uniq).to eq([false])
+    end
+
+    it 'keeps a plain nested class method in-memory-safe' do
+      source = "class Outer\n  class Inner\n    def bar(a)\n      a + 1\n    end\n  end\nend\n"
+      by_line = safe_by_line(source)
+
+      expect(by_line[4]).to eq([true])
+    end
+
+    it 'keeps a block nested inside a method body in-memory-safe' do
+      source = <<~RUBY
+        class Foo
+          def bar(items)
+            items.each { |i| i + 1 }
+          end
+        end
+      RUBY
+      by_line = safe_by_line(source)
+
+      expect(by_line[3]).to eq([true])
+    end
+  end
 end

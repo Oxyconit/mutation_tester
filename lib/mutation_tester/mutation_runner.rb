@@ -72,6 +72,7 @@ module MutationTester
       return fall_back_to_file_based(blocker, mutations, &progress_callback) if blocker
 
       warn '[MutationTester] In-memory execution selected (serial, zero file writes per mutant).'
+      announce_load_time_routing(mutations)
       results = []
       begin
         mutations.each_with_index do |mutation, index|
@@ -104,6 +105,7 @@ module MutationTester
       end
 
       warn "[MutationTester] In-memory execution selected (parallel, #{pool.size} preloaded workers, zero file writes per mutant)."
+      announce_load_time_routing(mutations)
       total = mutations.size
       completed_count = 0
       collected = []
@@ -189,6 +191,8 @@ module MutationTester
       }.tap do |result|
         if unparseable?(mutation[:code])
           mark_stillborn(result)
+        elsif strategy == :in_memory && mutation[:in_memory_safe] == false
+          run_mutation_load_time(mutation, result, project_root)
         elsif strategy == :in_memory
           run_mutation_in_memory(mutation, result, project_root)
         elsif strategy == :in_place
@@ -459,6 +463,19 @@ module MutationTester
       return unless %i[in_memory auto].include?(@config.runner)
 
       warn "[MutationTester] --worker-env #{@config.worker_env_var} is set, so the in-memory runner is skipped (its clones share one preloaded database connection); using the fork runner for per-worker database isolation."
+    end
+
+    def run_mutation_load_time(mutation, result, project_root)
+      root = project_root || discoverable_project_root
+      return mark_error(result, MutationTester::Error.new('a load-time mutant needs a project root for file-based execution')) unless root
+
+      run_mutation_in_shadow(mutation, result, root)
+    end
+
+    def announce_load_time_routing(mutations)
+      return unless mutations.any? { |mutation| mutation[:in_memory_safe] == false }
+
+      warn '[MutationTester] Some mutants affect load-time code (constants, class macros, included do); those run file-based so the in-memory score matches a full fork run.'
     end
 
     def in_memory_apply_fallback(mutation, result, project_root, reason)

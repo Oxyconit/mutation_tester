@@ -69,6 +69,8 @@ module MutationTester
       @skipped_count = 0
       @excluded_count = 0
       @disabled_lines = self.class.disabled_lines(@original_content)
+      @in_memory_safe_context = false
+      @class_body_block_depth = 0
       mutations = collect_mutations(ast)
       mutations = filter_mutations(mutations)
       report_skipped(mutations.size) if @skipped_count.positive?
@@ -103,11 +105,14 @@ module MutationTester
 
     def collect_mutations(ast, skip_string_mutation: false, block_call: false)
       mutations = []
+      previous_safe = @in_memory_safe_context
+      previous_block_depth = @class_body_block_depth
       return mutations unless ast
 
       scope_name = method_scope_name(ast)
       previous_scope = @enclosing_method
       @enclosing_method = scope_name if scope_name
+      update_load_time_context(ast.type)
 
       case ast.type
       when :send
@@ -141,7 +146,10 @@ module MutationTester
         mutations += mutate_logical_or(ast) if enabled?(:logical)
       end
 
-      mutations.each { |mutation| mutation[:method_name] = @enclosing_method }
+      mutations.each do |mutation|
+        mutation[:method_name] = @enclosing_method
+        mutation[:in_memory_safe] = @in_memory_safe_context
+      end
 
       loader_call = require_like_send?(ast)
       heredoc = heredoc_node?(ast)
@@ -157,6 +165,19 @@ module MutationTester
       mutations
     ensure
       @enclosing_method = previous_scope if scope_name
+      @in_memory_safe_context = previous_safe
+      @class_body_block_depth = previous_block_depth
+    end
+
+    def update_load_time_context(type)
+      case type
+      when :class, :module, :sclass
+        @in_memory_safe_context = false
+      when :def, :defs
+        @in_memory_safe_context = true if @class_body_block_depth.zero?
+      else
+        @class_body_block_depth += 1 if BLOCK_NODE_TYPES.include?(type) && !@in_memory_safe_context
+      end
     end
 
     def method_scope_name(node)

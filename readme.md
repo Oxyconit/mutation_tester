@@ -563,7 +563,12 @@ the fastest safe one, announcing every fallback on stderr:
 
 - **in_memory** (default where supported): re-evaluates the mutated source in the
   memory of a fresh fork of a preloaded process, with zero file writes per mutant
-  and no shadow workspaces. RSpec only; the fastest path.
+  and no shadow workspaces. RSpec only; the fastest path. Mutations that only take
+  effect at class-load time (constants consumed by macros, `validates`/`has_many`/
+  `before_save`/`scope`/`attribute`, anything inside an `included do` block) cannot
+  be observed by re-evaluating source in a preloaded process, so those mutants are
+  routed automatically to the file-based path and the rest still run in memory (see
+  below); the combined score matches a full `fork` run.
 - **fork**: preloads the environment once (RubyGems, Bundler, `rspec-core`) and
   forks a fresh child per mutant. RSpec on platforms with `Process.fork`; removes
   most of the fixed per-mutant boot cost.
@@ -575,6 +580,17 @@ the fastest safe one, announcing every fallback on stderr:
 stderr warning with its reason, so a fallback is never silent. All runners
 produce identical scores and per-mutant statuses and enforce the same hard
 per-mutant timeout (monotonic deadline plus a process-group kill).
+
+**Load-time mutants under in-memory (Rails).** The in-memory runner classifies each
+mutation by its AST context. A mutation inside a method body defined directly in a
+class/module is re-appliable in memory and runs there (fast). A mutation on a
+class/module-body statement (a constant, a `validates`/`has_many`/`before_save`/
+`scope`/`attribute` macro, or anything inside `included do ... end`) is decided
+file-based within the same run, because re-evaluating the source does not re-run
+those class-load registrations. This keeps in-memory speed for the common case
+while matching a full `fork` score on Rails concerns and models. When at least one
+mutant is routed this way, the run prints one stderr notice. It is automatic; you
+do not need to pick `--runner fork` for correctness on load-time code.
 
 | Mode        | Picked by `auto` when                                                                                                                                                   | Falls back to                                                                                                                              |
 |-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|

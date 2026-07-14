@@ -1076,6 +1076,52 @@ RSpec.describe MutationTester::MutationRunner do
 
       expect(results.map { |r| r[:status] }).to eq(%i[killed survived])
     end
+
+    def load_time_mutant
+      { id: 1, type: :number, line: 2, description: 'constant boundary',
+        in_memory_safe: false, code: original_source.sub('LIMIT = 5', 'LIMIT = 4') }
+    end
+
+    def in_memory_safe_mutant
+      { id: 1, type: :arithmetic, line: 5, description: 'covered',
+        in_memory_safe: true, code: original_source.sub('a + b', 'a - b') }
+    end
+
+    it 'routes a load-time-tagged mutant through the file-based path, not the in-memory path' do
+      runner = build_runner(:in_memory)
+      expect(runner).to receive(:run_mutation_in_shadow).at_least(:once).and_call_original
+      expect(runner).not_to receive(:run_mutation_in_memory)
+
+      Dir.chdir(project_root) { runner.run([load_time_mutant]) }
+    end
+
+    it 'keeps an in-memory-safe-tagged mutant on the in-memory path' do
+      runner = build_runner(:in_memory)
+      expect(runner).to receive(:run_mutation_in_memory).at_least(:once).and_call_original
+
+      Dir.chdir(project_root) { runner.run([in_memory_safe_mutant]) }
+    end
+
+    it 'announces once that load-time mutants run file-based to stay correct' do
+      runner = build_runner(:in_memory)
+
+      expect { Dir.chdir(project_root) { runner.run([load_time_mutant]) } }
+        .to output(/affect load-time code.*file-based/m).to_stderr
+    end
+
+    it 'does not announce load-time routing when every mutant is in-memory-safe' do
+      runner = build_runner(:in_memory)
+
+      expect { Dir.chdir(project_root) { runner.run([in_memory_safe_mutant]) } }
+        .not_to output(/affect load-time code/).to_stderr
+    end
+
+    it 'gives a load-time-tagged mutant the same status as a full fork run' do
+      in_memory_result = Dir.chdir(project_root) { build_runner(:in_memory).run([load_time_mutant]) }
+      fork_result = Dir.chdir(project_root) { build_runner(:fork).run([load_time_mutant]) }
+
+      expect(in_memory_result.map { |r| r[:status] }).to eq(fork_result.map { |r| r[:status] })
+    end
   end
 
   describe 'parallel execution with a shared preloaded worker pool' do
