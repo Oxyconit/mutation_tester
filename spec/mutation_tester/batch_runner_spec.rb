@@ -379,6 +379,73 @@ RSpec.describe MutationTester::BatchRunner do
     end
   end
 
+  describe 'degraded runs in the batch summary verdict' do
+    def entry(passed:, degraded: false)
+      MutationTester::BatchRunner::ProcessedEntry.new(
+        source_file: 'lib/x.rb', spec_file: 'spec/x_spec.rb',
+        score: 0.0, passed: passed, output_dir: 'tmp/x',
+        results: [], interrupted: false, degraded: degraded
+      )
+    end
+
+    def summary_for(entries)
+      result = MutationTester::BatchRunner::Result.new(processed: entries, skipped: [])
+      captured = StringIO.new
+      original = $stdout
+      $stdout = captured
+      begin
+        list_runner(['lib/x.rb']).send(:print_summary, result)
+      ensure
+        $stdout = original
+      end
+      captured.string
+    end
+
+    it 'replaces the threshold verdict when every failing file produced no scored mutants' do
+      output = summary_for([entry(passed: false, degraded: true), entry(passed: true)])
+
+      expect(output).to match(/no scored mutants.*infrastructure or runner problem/)
+      expect(output).not_to match(/did not meet the mutation score threshold/)
+    end
+
+    it 'keeps the threshold verdict and flags the degraded files when failures are mixed' do
+      output = summary_for([entry(passed: false, degraded: true), entry(passed: false)])
+
+      expect(output).to match(/did not meet the mutation score threshold/)
+      expect(output).to match(/1 of the failing files produced no scored mutants/)
+    end
+
+    it 'keeps the plain threshold verdict when no failing file degraded' do
+      output = summary_for([entry(passed: false)])
+
+      expect(output).to match(/did not meet the mutation score threshold/)
+      expect(output).not_to match(/no scored mutants/)
+    end
+
+    it 'marks a processed entry degraded when Core reports an infrastructure failure' do
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          FileUtils.mkdir_p('lib')
+          FileUtils.mkdir_p('spec')
+          File.write('lib/x.rb', "class X\nend\n")
+          File.write('spec/x_spec.rb', "RSpec.describe('x') {}\n")
+
+          core = instance_double(
+            MutationTester::Core,
+            run: false, mutation_score: 0.0, results: [],
+            interrupted?: false, infrastructure_failure?: true
+          )
+          allow(MutationTester::Core).to receive(:new).and_return(core)
+
+          result = nil
+          expect { result = list_runner(['lib/x.rb']).run }.to output(/infrastructure or runner problem/).to_stdout
+
+          expect(result.processed.first.degraded?).to be(true)
+        end
+      end
+    end
+  end
+
   describe 'survivors section in the batch summary' do
     def result_with_survivor
       MutationTester::BatchRunner::Result.new(

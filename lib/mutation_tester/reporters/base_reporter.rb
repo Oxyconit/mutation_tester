@@ -3,12 +3,14 @@ module MutationTester
     class BaseReporter
       attr_reader :results, :source_file, :spec_file, :config
 
-      def self.score(results)
-        effective_killed = results.count { |r| %i[killed timeout].include?(status_for(r)) }
-        scored = results.count { |r| %i[killed timeout survived].include?(status_for(r)) }
+      def self.score(results, policy: :killed)
+        killing_statuses = policy == :separate ? %i[killed] : %i[killed timeout]
+        scoring_statuses = killing_statuses + %i[survived]
+        kills = results.count { |r| killing_statuses.include?(status_for(r)) }
+        scored = results.count { |r| scoring_statuses.include?(status_for(r)) }
         return 0.0 if scored.zero?
 
-        (effective_killed.to_f / scored * 100).round(2)
+        (kills.to_f / scored * 100).round(2)
       end
 
       def self.status_for(result)
@@ -62,6 +64,8 @@ module MutationTester
       end
 
       def effective_killed_count
+        return killed_count if @config.timeout_policy == :separate
+
         killed_count + timeout_count
       end
 
@@ -70,7 +74,7 @@ module MutationTester
       end
 
       def mutation_score
-        self.class.score(@results)
+        self.class.score(@results, policy: @config.timeout_policy)
       end
 
       def quality_rating

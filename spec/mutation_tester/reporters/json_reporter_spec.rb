@@ -68,6 +68,19 @@ RSpec.describe MutationTester::Reporters::JsonReporter do
           .to eq(%w[killed survived timeout stillborn error])
         expect(json[:mutations][4][:description]).to include('boom')
       end
+
+      it 'keeps timeouts out of the kills and the score under the separate timeout policy' do
+        config.timeout_policy = :separate
+
+        reporter.generate
+        json = JSON.parse(File.read(File.join(tmp_dir, 'mutation_report.json')), symbolize_names: true)
+
+        expect(json[:summary][:killed]).to eq(1)
+        expect(json[:summary][:mutation_score]).to eq(50.0)
+        expect(json[:summary][:categories]).to eq(
+          killed: 1, survived: 1, timeout: 1, stillborn: 1, error: 1
+        )
+      end
     end
   end
 

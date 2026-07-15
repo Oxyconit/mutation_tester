@@ -1321,6 +1321,7 @@ RSpec.describe 'MutationTester::Core shadow baseline sanity check' do
       expect(core.results).to be_empty
       expect(output).to match(/shadow/i)
       expect(output).to match(/unreliable/i)
+      expect(core.infrastructure_failure?).to be(true)
     end
   end
 end
@@ -1328,11 +1329,11 @@ end
 RSpec.describe 'exe/mutation_test exit code reflects the threshold result' do
   ROOT = File.expand_path('..', __dir__)
 
-  def cli_status(source, spec, chdir:)
+  def cli_status(source, spec, chdir:, args: [])
     env = { 'BUNDLE_GEMFILE' => File.join(ROOT, 'Gemfile') }
     system(
       env,
-      'bundle', 'exec', File.join(ROOT, 'exe', 'mutation_test'), source, spec,
+      'bundle', 'exec', File.join(ROOT, 'exe', 'mutation_test'), *args, source, spec,
       chdir: chdir, out: File::NULL, err: File::NULL
     )
     $?.exitstatus
@@ -1387,6 +1388,39 @@ RSpec.describe 'exe/mutation_test exit code reflects the threshold result' do
         chdir: dir
       )
       expect(status).to eq(0)
+    end
+  end
+
+  it 'exits 3 instead of 1 when the run aborts on an unreliable shadow workspace' do
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, 'lib'))
+      FileUtils.mkdir_p(File.join(dir, 'spec'))
+      FileUtils.mkdir_p(File.join(dir, 'tmp'))
+      system('git', '-C', dir, 'init', '-q')
+      File.write(File.join(dir, 'lib', 'calculator.rb'), <<~RUBY)
+        class Calculator
+          def add(a, b)
+            a + b
+          end
+        end
+      RUBY
+      File.write(File.join(dir, 'tmp', 'shared.rb'), "SHADOW_ONLY = true\n")
+      File.write(File.join(dir, 'spec', 'calculator_spec.rb'), <<~RUBY)
+        require_relative '../lib/calculator'
+        require_relative '../tmp/shared'
+
+        RSpec.describe Calculator do
+          it('adds') { expect(SHADOW_ONLY && Calculator.new.add(1, 2) == 3).to be(true) }
+        end
+      RUBY
+
+      status = cli_status(
+        File.join(dir, 'lib', 'calculator.rb'),
+        File.join(dir, 'spec', 'calculator_spec.rb'),
+        chdir: dir,
+        args: ['-p', '2', '--runner', 'spawn']
+      )
+      expect(status).to eq(3)
     end
   end
 

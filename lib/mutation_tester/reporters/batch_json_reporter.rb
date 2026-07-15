@@ -53,7 +53,7 @@ module MutationTester
       end
 
       def aggregate_score
-        BaseReporter.score(@result.processed.flat_map { |entry| entry.results || [] })
+        BaseReporter.score(@result.processed.flat_map { |entry| entry.results || [] }, policy: @config.timeout_policy)
       end
 
       def file_reports

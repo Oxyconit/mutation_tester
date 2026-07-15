@@ -206,6 +206,8 @@ mutation_test [OPTIONS] --glob 'lib/**/*.rb'
 | `--spec-glob TEMPLATE` | Spec-mapping template with a `{name}` placeholder (default: `spec/{name}_spec.rb`). Requires a positional `FILE` list, `--staged`, or `--glob`. |
 | `--since REV` | Incremental batch mode: mutate only the files matched by `--glob` that changed since git revision `REV` (new files count as changed). Requires `--glob`. See [Incremental mode](#incremental-mode-mutate-only-what-changed). |
 | `--fail-fast` | Stop the run at the first surviving mutant and finish with a failing status. Works in single-file mode and with `--glob`. |
+| `--timeout-factor N` | Per-mutant timeout budget as `N` times the measured baseline test run, never below 5 s (default: 5, must be > 0). Ignored when `config.timeout` is set explicitly, which keeps a fixed budget. See [Configuration](#configuration). |
+| `--timeout-policy MODE` | Scoring policy for timed-out mutants: `killed` (default) counts a timeout as a kill; `separate` keeps timeouts out of the score entirely (`killed / (killed + survived)`) and reports them only as their own category in the console, JSON and HTML reports. |
 | `--worker-env NAME` | Set environment variable `NAME` to a distinct per-worker value before each parallel worker boots (`parallel_tests` `TEST_ENV_NUMBER` convention: worker 0 -> `""`, worker N -> `N+1`), so a `parallel_tests`-style `database.yml` selects a per-worker database. You provision the databases (e.g. `rake parallel:prepare`). Not supported by the `in_memory` runner (it falls back to `fork`). See [Making parallelism work with Rails](#making-parallelism-work-with-rails). |
 | `--strict-equality` | Enable the opt-in strict-equality probes (`==` → `eql?` and `==` → `equal?`). Default off; expect noise on code that does not distinguish numeric types or object identity. See [Strict Equality Mutations](docs/mutation-types.md#strict-equality-mutations-opt-in). |
 | `-h, --help` | Show help message. |
@@ -222,6 +224,22 @@ mutation_test [OPTIONS] --glob 'lib/**/*.rb'
 bundle exec mutation_test --reporters json,html --output-dir build/mutation \
   app/models/user.rb spec/models/user_spec.rb
 ```
+
+### Exit codes (single-file mode)
+
+- `0` - the run passed (score met the threshold, or `fail_on_threshold` is disabled).
+- `1` - the mutation score is below the threshold, or the input is unusable (missing
+  file, unknown reporter, source with a syntax error).
+- `2` - a usage error (conflicting flags; see the batch sections below).
+- `3` - the run aborted or degraded before reaching a verdict: the shadow workspace
+  was unreliable, or every mutant ended as `error`/`stillborn` so nothing was scored.
+  This signals an infrastructure or runner problem, not a test-quality gap, so CI
+  hooks can distinguish it from a genuine threshold failure.
+- `130` - interrupted with Ctrl+C.
+
+Batch modes (`FILE...` lists, `--staged`, `--glob`) keep the exit codes documented in
+their sections below (`0`/`1`/`2`); a degraded file is named explicitly in the batch
+summary instead of being blamed on the threshold.
 
 ### Running with rake
 
@@ -403,8 +421,24 @@ MutationTester.configure do |config|
   # config.parallel_processes = 1
   config.parallel_processes = 4
 
-  # Timeout for each test run (seconds)
-  config.timeout = 30
+  # Per-mutant timeout (seconds). Calibrated automatically by default:
+  # max(5, timeout_factor * measured baseline duration), so a loaded machine
+  # cannot inflate the score by turning healthy-but-slow runs into timeout
+  # kills; on code paths without a measured baseline the fixed default of 30
+  # applies. Setting config.timeout explicitly (a number, or nil for no
+  # deadline at all) disables calibration and keeps that fixed budget:
+  # config.timeout = 30
+
+  # Multiplier for the baseline-calibrated per-mutant timeout (> 0; an
+  # invalid value falls back to the default with a warning):
+  config.timeout_factor = 5
+
+  # Scoring policy for timed-out mutants. :killed (default) counts a timeout
+  # as a kill: (killed + timeout) / (killed + timeout + survived). :separate
+  # keeps timeouts out of the score entirely, killed / (killed + survived),
+  # and reports them only as their own category, so timeouts under load can
+  # never raise the score:
+  config.timeout_policy = :killed
 
   # Mutant execution runner: :auto (default), :fork, :spawn or :in_memory.
   # :auto picks the fastest safe path and announces any fallback on stderr;
@@ -725,7 +759,9 @@ to get a single, clean JSON document on **stdout** and nothing else: the banner,
 progress spinner, colours and the "report saved" notice all go to **stderr**, so
 the stream is safe to pipe straight into `jq` or a parser. The process still
 exits `0` when the mutation score meets the configured threshold and `1` when it
-does not, so the exit code remains a pass/fail signal.
+does not (a degraded single-file run exits `3`, see
+[Exit codes](#exit-codes-single-file-mode)), so the exit code remains a
+pass/fail signal.
 
 ```bash
 bundle exec mutation_test --json examples/calculator.rb examples/calculator_spec.rb | jq .

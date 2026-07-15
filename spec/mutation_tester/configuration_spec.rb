@@ -228,6 +228,148 @@ RSpec.describe MutationTester::Configuration do
     end
   end
 
+  describe '#timeout_factor' do
+    it 'defaults to 5' do
+      expect(described_class.new.timeout_factor).to eq(5)
+    end
+
+    it 'accepts a positive numeric value, including a numeric string' do
+      config = described_class.new
+
+      config.timeout_factor = 2.5
+      expect(config.timeout_factor).to eq(2.5)
+
+      config.timeout_factor = '3'
+      expect(config.timeout_factor).to eq(3.0)
+    end
+
+    it 'falls back to the default with a warning for zero, negative, or unparseable values' do
+      config = described_class.new
+
+      expect { config.timeout_factor = 0 }
+        .to output(/timeout_factor must be a number greater than 0/).to_stderr
+      expect(config.timeout_factor).to eq(5)
+
+      expect { config.timeout_factor = 'abc' }
+        .to output(/timeout_factor must be a number greater than 0/).to_stderr
+      expect(config.timeout_factor).to eq(5)
+
+      expect { config.timeout_factor = -1 }
+        .to output(/timeout_factor must be a number greater than 0/).to_stderr
+      expect(config.timeout_factor).to eq(5)
+    end
+
+    it 'survives a merge round trip without leaking back to the source' do
+      config = described_class.new
+      merged = config.merge(timeout_factor: 2)
+
+      expect(merged.timeout_factor).to eq(2.0)
+      expect(config.timeout_factor).to eq(5)
+    end
+  end
+
+  describe '#timeout_policy' do
+    it 'defaults to killed so timeouts keep counting as kills' do
+      expect(described_class.new.timeout_policy).to eq(:killed)
+    end
+
+    it 'accepts killed and separate given as strings or symbols' do
+      config = described_class.new
+
+      config.timeout_policy = 'separate'
+      expect(config.timeout_policy).to eq(:separate)
+
+      config.timeout_policy = :killed
+      expect(config.timeout_policy).to eq(:killed)
+    end
+
+    it 'falls back to killed with a warning for an unknown value' do
+      config = described_class.new
+
+      expect { config.timeout_policy = 'lenient' }
+        .to output(/timeout_policy must be one of killed, separate/).to_stderr
+
+      expect(config.timeout_policy).to eq(:killed)
+    end
+
+    it 'survives a merge round trip without leaking back to the source' do
+      config = described_class.new
+      merged = config.merge(timeout_policy: :separate)
+
+      expect(merged.timeout_policy).to eq(:separate)
+      expect(config.timeout_policy).to eq(:killed)
+    end
+  end
+
+  describe '#effective_timeout (baseline-calibrated per-mutant deadline)' do
+    it 'keeps the fixed 30s default when no baseline duration was measured' do
+      expect(described_class.new.effective_timeout).to eq(30)
+    end
+
+    it 'scales the measured baseline duration by the timeout factor' do
+      config = described_class.new
+      config.baseline_duration = 10
+
+      expect(config.effective_timeout).to eq(50)
+    end
+
+    it 'never drops below the floor for an ultra-fast baseline' do
+      config = described_class.new
+      config.baseline_duration = 0.2
+
+      expect(config.effective_timeout).to eq(described_class::CALIBRATED_TIMEOUT_FLOOR)
+    end
+
+    it 'uses an overridden factor for the calibration' do
+      config = described_class.new
+      config.timeout_factor = 2
+      config.baseline_duration = 10
+
+      expect(config.effective_timeout).to eq(20)
+    end
+
+    it 'keeps a fixed budget and disables calibration when timeout is set explicitly' do
+      config = described_class.new
+      config.timeout = 12
+      config.baseline_duration = 100
+
+      expect(config.effective_timeout).to eq(12)
+    end
+
+    it 'keeps an explicit nil timeout as no deadline even with a measured baseline' do
+      config = described_class.new
+      config.timeout = nil
+      config.baseline_duration = 100
+
+      expect(config.effective_timeout).to be_nil
+    end
+
+    it 'treats a timeout set through merge as explicit' do
+      merged = described_class.new.merge(timeout: 45)
+      merged.baseline_duration = 100
+
+      expect(merged.effective_timeout).to eq(45)
+    end
+
+    it 'carries the explicit flag across the per-run copy from merge' do
+      config = described_class.new
+      config.timeout = 60
+      merged = config.merge({})
+      merged.baseline_duration = 100
+
+      expect(merged.effective_timeout).to eq(60)
+      expect(merged.timeout_explicitly_set?).to be(true)
+    end
+
+    it 'keeps calibration active on a per-run copy of an untouched timeout' do
+      merged = described_class.new.merge({})
+      merged.baseline_duration = 10
+
+      expect(merged.timeout_explicitly_set?).to be(false)
+      expect(merged.effective_timeout).to eq(50)
+    end
+  end
+
   describe '#merge isolation (deep copy of mutable collections)' do
     it 'does not leak an in-place mutation of the copy back into the source' do
       config = described_class.new

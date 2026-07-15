@@ -61,6 +61,59 @@ RSpec.describe MutationTester::Reporters::BaseReporter do
     end
   end
 
+  describe '.score under the separate timeout policy' do
+    let(:results) do
+      [
+        { id: 1, status: :killed, killed: true },
+        { id: 2, status: :killed, killed: true },
+        { id: 3, status: :survived, killed: false },
+        { id: 4, status: :timeout, killed: true, timeout: true },
+        { id: 5, status: :timeout, killed: true, timeout: true },
+        { id: 6, status: :timeout, killed: true, timeout: true },
+        { id: 7, status: :stillborn, killed: false },
+        { id: 8, status: :error, killed: false, description: 'Error: boom' }
+      ]
+    end
+
+    it 'scores killed / (killed + survived), leaving timeouts out of numerator and denominator' do
+      expect(described_class.score(results, policy: :separate)).to eq(66.67)
+      expect(described_class.score(results, policy: :killed)).to eq(83.33)
+      expect(described_class.score(results)).to eq(83.33)
+    end
+
+    it 'does not let load-induced timeouts raise the score, unlike the default policy' do
+      base = [
+        { id: 1, status: :killed, killed: true },
+        { id: 2, status: :survived, killed: false }
+      ]
+      under_load = base + [
+        { id: 3, status: :timeout, killed: true, timeout: true },
+        { id: 4, status: :timeout, killed: true, timeout: true }
+      ]
+
+      idle_score = described_class.score(base, policy: :separate)
+      loaded_score = described_class.score(under_load, policy: :separate)
+
+      expect(loaded_score).to eq(idle_score)
+      expect(described_class.score(under_load, policy: :killed)).to be > idle_score
+    end
+
+    it 'returns 0.0 when nothing was killed or survived' do
+      only_timeouts = [{ id: 1, status: :timeout, killed: true, timeout: true }]
+
+      expect(described_class.score(only_timeouts, policy: :separate)).to eq(0.0)
+    end
+
+    it 'drives the instance score and effective kills through config.timeout_policy' do
+      config.timeout_policy = :separate
+      reporter = reporter_for(results)
+
+      expect(reporter.send(:mutation_score)).to eq(66.67)
+      expect(reporter.send(:effective_killed_count)).to eq(2)
+      expect(reporter.send(:timeout_count)).to eq(3)
+    end
+  end
+
   describe 'removed dead helpers' do
     %i[killed_mutations scored_count].each do |method_name|
       it "no longer defines ##{method_name}" do

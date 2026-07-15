@@ -280,6 +280,35 @@ RSpec.describe MutationTester::MutationRunner do
     end
   end
 
+  describe 'per-mutant deadline calibration' do
+    def runner_with(config)
+      described_class.new('lib/foo.rb', 'spec/foo_spec.rb', "x = 1\n", config)
+    end
+
+    def expect_deadline(config, expected)
+      command = instance_double(MutationTester::TestCommand)
+      allow(MutationTester::TestCommand).to receive(:new).and_return(command)
+      expect(command).to receive(:run).with(timeout: expected)
+
+      runner_with(config).run_specs_in_place('spec/foo_spec.rb')
+    end
+
+    it 'passes the baseline-calibrated deadline to the test command when no explicit timeout is set' do
+      config = MutationTester::Configuration.new
+      config.baseline_duration = 4
+
+      expect_deadline(config, 20)
+    end
+
+    it 'keeps an explicitly configured fixed deadline even with a measured baseline' do
+      config = MutationTester::Configuration.new
+      config.timeout = 7
+      config.baseline_duration = 100
+
+      expect_deadline(config, 7)
+    end
+  end
+
   describe '#detect_test_framework' do
     it 'detects minitest by filename' do
       expect(runner.detect_test_framework('foo_test.rb')).to eq(:minitest)

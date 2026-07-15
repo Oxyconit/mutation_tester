@@ -45,7 +45,7 @@ namespace :mutation do
     end
 
     unless all_passed
-      puts Rainbow("\n❌ One or more files did not meet the mutation score threshold").red
+      puts Rainbow("\n❌ One or more files failed mutation testing (see the per-file output above)").red
       abort
     end
   end

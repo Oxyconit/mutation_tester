@@ -20,9 +20,13 @@ module MutationTester
 
     SKIP_ORDER = %i[missing not_ruby test_file no_spec].freeze
 
-    ProcessedEntry = Struct.new(:source_file, :spec_file, :score, :passed, :output_dir, :results, :interrupted, keyword_init: true) do
+    ProcessedEntry = Struct.new(:source_file, :spec_file, :score, :passed, :output_dir, :results, :interrupted, :degraded, keyword_init: true) do
       def passed?
         passed
+      end
+
+      def degraded?
+        !!degraded
       end
     end
 
@@ -192,7 +196,8 @@ module MutationTester
         passed: passed,
         output_dir: file_config.output_dir,
         results: core.results,
-        interrupted: core.interrupted?
+        interrupted: core.interrupted?,
+        degraded: core.infrastructure_failure?
       )
       [entry, core.interrupted?]
     end
@@ -247,12 +252,19 @@ module MutationTester
       end
 
       puts Rainbow('=' * 80).bright
+      failed = result.processed.reject(&:passed?)
+      degraded = failed.select(&:degraded?)
       if @files && result.processed.empty?
         puts Rainbow('❌ No files were mutation-tested: every listed file was skipped').red
       elsif result.success?
         puts Rainbow('✓ All processed files met the mutation score threshold').green
+      elsif degraded.size == failed.size
+        puts Rainbow('❌ The failing files produced no scored mutants; this indicates an infrastructure or runner problem, not a test-quality gap').red
       else
         puts Rainbow('❌ One or more files did not meet the mutation score threshold').red
+        unless degraded.empty?
+          puts Rainbow("⚠️ #{degraded.size} of the failing files produced no scored mutants (infrastructure or runner problem); see the per-file output above").yellow
+        end
       end
 
       print_survivors(result.survivors)

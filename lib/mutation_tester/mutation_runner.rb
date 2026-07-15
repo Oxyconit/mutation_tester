@@ -285,7 +285,7 @@ module MutationTester
     end
 
     def run_specs_in_shadow(spec_file, working_dir, example_filters: [])
-      test_command(spec_file, example_filters: example_filters).run(timeout: @config.timeout, chdir: working_dir)
+      test_command(spec_file, example_filters: example_filters).run(timeout: @config.effective_timeout, chdir: working_dir)
     end
 
     def discoverable_project_root
@@ -325,7 +325,7 @@ module MutationTester
     end
 
     def run_specs_in_place(spec_file, example_filters: [])
-      test_command(spec_file, example_filters: example_filters).run(timeout: @config.timeout)
+      test_command(spec_file, example_filters: example_filters).run(timeout: @config.effective_timeout)
     end
 
     def run_mutation_in_memory(mutation, result, project_root = nil)
@@ -335,7 +335,7 @@ module MutationTester
       outcome = runner.execute_in_memory(
         source: mutation[:code],
         path: @source_file,
-        timeout: @config.timeout,
+        timeout: @config.effective_timeout,
         chdir: Dir.pwd
       )
 
@@ -419,7 +419,7 @@ module MutationTester
       outcome = runner.execute_in_memory(
         source: @original_content,
         path: @source_file,
-        timeout: @config.timeout,
+        timeout: @config.effective_timeout,
         chdir: Dir.pwd
       )
       return nil if outcome.status == 'pass'

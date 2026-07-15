@@ -11,6 +11,7 @@ module MutationTester
       @mutations = []
       @results = []
       @parse_failed = false
+      @shadow_aborted = false
       MutationRunner.recover_in_place_backup(@source_file)
       @original_content = File.read(@source_file)
     end
@@ -27,11 +28,15 @@ module MutationTester
         return true
       end
 
-      return false unless shadow_environment_reliable?
+      unless shadow_environment_reliable?
+        @shadow_aborted = true
+        return false
+      end
 
       run_mutations
       generate_reports
       return report_interruption if interrupted?
+      return report_infrastructure_failure if infrastructure_failure?
 
       check_threshold
     ensure
@@ -46,7 +51,11 @@ module MutationTester
     end
 
     def mutation_score
-      Reporters::BaseReporter.score(@results)
+      Reporters::BaseReporter.score(@results, policy: @config.timeout_policy)
+    end
+
+    def infrastructure_failure?
+      @shadow_aborted || (!@results.empty? && scored_count.zero?)
     end
 
     def threshold_met?
@@ -69,7 +78,9 @@ module MutationTester
     def run_original_tests
       puts Rainbow("\n🧪 Running original tests...").yellow
       command = test_command
+      baseline_started = monotonic_time
       result = command.run(timeout: @config.baseline_timeout, capture: true)
+      baseline_elapsed = monotonic_time - baseline_started
 
       if result.timed_out?
         puts Rainbow("❌ Original tests exceeded the baseline deadline of #{@config.baseline_timeout}s and were terminated.").red
@@ -85,7 +96,12 @@ module MutationTester
         return false
       end
       puts Rainbow('✓ Original tests passed').green
+      @config.baseline_duration = baseline_elapsed
       true
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def replay_baseline_output(output)
@@ -175,6 +191,20 @@ module MutationTester
     def report_interruption
       puts Rainbow("\n🛑 Run interrupted by --fail-fast: a mutant survived after #{@results.size} of #{@mutations.size} mutations.").red
       puts Rainbow('   Reports contain the results obtained up to the interruption.').red
+      false
+    end
+
+    def scored_count
+      @results.count { |r| %i[killed timeout survived].include?(Reporters::BaseReporter.status_for(r)) }
+    end
+
+    def status_count(status)
+      @results.count { |r| Reporters::BaseReporter.status_for(r) == status }
+    end
+
+    def report_infrastructure_failure
+      puts Rainbow("\n❌ Run failed: none of the #{@results.size} mutants could be scored (#{status_count(:error)} error, #{status_count(:stillborn)} stillborn).").red
+      puts Rainbow('   This indicates an infrastructure or runner problem (test environment, workspace, or test command), not a test-quality gap.').red
       false
     end
 

@@ -72,6 +72,32 @@ RSpec.describe 'exe/mutation_test CLI' do
     end
   end
 
+  describe '--timeout-factor and --timeout-policy' do
+    it 'documents both flags in the help output' do
+      output, status = run_cli('--help')
+
+      expect(status).to eq(0)
+      expect(output).to match(/--timeout-factor N/)
+      expect(output).to match(/--timeout-policy MODE/)
+    end
+
+    it 'accepts a numeric factor and the separate policy without any fallback warning' do
+      output, status = run_cli('--timeout-factor', '2.5', '--timeout-policy', 'separate', CLI_SOURCE, CLI_SPEC)
+
+      expect(status).to eq(0)
+      expect(output).not_to match(/falling back/)
+      expect(output).to match(/Mutation Score: \d/)
+    end
+
+    it 'falls back to the defaults with warnings for invalid values' do
+      output, status = run_cli('--timeout-factor', '0', '--timeout-policy', 'lenient', CLI_SOURCE, CLI_SPEC)
+
+      expect(status).to eq(0)
+      expect(output).to match(/timeout_factor must be a number greater than 0.*falling back to 5/)
+      expect(output).to match(/timeout_policy must be one of killed, separate.*falling back to killed/)
+    end
+  end
+
   describe 'argument and file validation' do
     it 'exits 1 with a usage message when no input files are given' do
       output, status = run_cli

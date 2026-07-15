@@ -3,7 +3,11 @@ require 'etc'
 module MutationTester
   class Configuration
     RUNNER_MODES = %i[auto fork spawn in_memory].freeze
+    TIMEOUT_POLICIES = %i[killed separate].freeze
     AUTO_PARALLEL_CAP = 8
+    DEFAULT_TIMEOUT = 30
+    DEFAULT_TIMEOUT_FACTOR = 5
+    CALIBRATED_TIMEOUT_FLOOR = 5
 
     def self.auto_parallel_processes
       [[Etc.nprocessors, AUTO_PARALLEL_CAP].min, 1].max
@@ -14,9 +18,9 @@ module MutationTester
       number <= 0 ? '' : (number + 1).to_s
     end
 
-    attr_reader :parallel_processes, :runner, :worker_env_var
+    attr_reader :parallel_processes, :runner, :worker_env_var, :timeout, :timeout_factor, :timeout_policy
 
-    attr_accessor :timeout,
+    attr_accessor :baseline_duration,
       :baseline_timeout,
       :mutation_types,
       :reporters,
@@ -33,7 +37,9 @@ module MutationTester
       self.parallel_processes = ENV['MUTATION_TESTER_PARALLEL_PROCESSES'] || self.class.auto_parallel_processes
       self.runner = ENV['MUTATION_TESTER_RUNNER'] || :auto
       self.worker_env_var = ENV['MUTATION_TESTER_WORKER_ENV']
-      @timeout = 30
+      @timeout = DEFAULT_TIMEOUT
+      @timeout_factor = DEFAULT_TIMEOUT_FACTOR
+      @timeout_policy = :killed
       @baseline_timeout = 300
       @mutation_types = {
         arithmetic: true,
@@ -73,6 +79,39 @@ module MutationTester
       @reporters = source.reporters.dup
     end
 
+    def timeout=(value)
+      @timeout_explicit = true
+      @timeout = value
+    end
+
+    def timeout_explicitly_set?
+      !!@timeout_explicit
+    end
+
+    def timeout_factor=(value)
+      factor = coerce_numeric(value)
+      unless factor.positive?
+        warn "[MutationTester] timeout_factor must be a number greater than 0; got #{value.inspect}, falling back to #{DEFAULT_TIMEOUT_FACTOR}."
+        factor = DEFAULT_TIMEOUT_FACTOR
+      end
+      @timeout_factor = factor
+    end
+
+    def timeout_policy=(value)
+      policy = value.to_s.strip.downcase.to_sym
+      unless TIMEOUT_POLICIES.include?(policy)
+        warn "[MutationTester] timeout_policy must be one of #{TIMEOUT_POLICIES.join(", ")}; got #{value.inspect}, falling back to killed."
+        policy = :killed
+      end
+      @timeout_policy = policy
+    end
+
+    def effective_timeout
+      return @timeout if timeout_explicitly_set? || @baseline_duration.nil?
+
+      [CALIBRATED_TIMEOUT_FLOOR, @timeout_factor * @baseline_duration].max
+    end
+
     def parallel_processes=(value)
       count = value.to_i
       if count < 1
@@ -100,6 +139,14 @@ module MutationTester
       return nil unless @worker_env_var
 
       { @worker_env_var => self.class.worker_env_value(index) }
+    end
+
+    private
+
+    def coerce_numeric(value)
+      Float(value)
+    rescue ArgumentError, TypeError
+      0
     end
   end
 end

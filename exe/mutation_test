@@ -68,6 +68,14 @@ OptionParser.new do |opts|
     options[:fail_fast] = true
   end
 
+  opts.on('--timeout-factor N', Float, "Per-mutant timeout budget as N times the measured baseline test run, never below #{MutationTester::Configuration::CALIBRATED_TIMEOUT_FLOOR}s (default: #{MutationTester::Configuration::DEFAULT_TIMEOUT_FACTOR}; ignored when config.timeout is set explicitly, which keeps a fixed budget)") do |n|
+    options[:timeout_factor] = n
+  end
+
+  opts.on('--timeout-policy MODE', 'Scoring policy for timed-out mutants: killed (default) counts a timeout as a kill; separate keeps timeouts out of the score entirely (killed / (killed + survived)) and reports them only as their own category') do |mode|
+    options[:timeout_policy] = mode
+  end
+
   opts.on('--strict-equality', 'Enable strict equality probes (== to eql? and equal?); default off, expect noise on code that does not distinguish numeric types or object identity') do
     options[:strict_equality] = true
   end
@@ -151,6 +159,8 @@ apply_configuration = lambda do
     config.reporters = selected_reporters if selected_reporters
     config.output_dir = options[:output_dir] if options[:output_dir]
     config.test_selection = false if options[:no_test_selection]
+    config.timeout_factor = options[:timeout_factor] if options[:timeout_factor]
+    config.timeout_policy = options[:timeout_policy] if options[:timeout_policy]
     config.worker_env_var = options[:worker_env] if options.key?(:worker_env)
     config.fail_fast = options.fetch(:fail_fast, false)
     config.mutation_types[:strict_equality] = true if options[:strict_equality]
@@ -342,4 +352,5 @@ else
   success = guard_interrupt.call { core.run }
 end
 
-exit(success ? 0 : 1)
+exit 0 if success
+exit(core.infrastructure_failure? ? 3 : 1)

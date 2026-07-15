@@ -228,6 +228,46 @@ RSpec.describe 'MutationTester::Core#run_original_tests deadline + shell-free ba
     end
   end
 
+  it 'measures the baseline wall-clock duration on the monotonic clock and stores it on the configuration' do
+    Dir.mktmpdir do |dir|
+      spec = File.join(dir, 'thing_spec.rb')
+      File.write(spec, '')
+      config = MutationTester::Configuration.new
+      core = core_for(spec, config)
+      allow(core).to receive(:puts)
+
+      command = core.send(:test_command)
+      allow(core).to receive(:test_command).and_return(command)
+      allow(command).to receive(:run)
+        .and_return(MutationTester::TestCommand::Result.new(true, false))
+      allow(Process).to receive(:clock_gettime)
+        .with(Process::CLOCK_MONOTONIC).and_return(100.0, 105.5)
+
+      expect(core.send(:run_original_tests)).to be true
+      expect(config.baseline_duration).to eq(5.5)
+      expect(config.effective_timeout).to eq(27.5)
+    end
+  end
+
+  it 'stores no baseline duration when the baseline run fails' do
+    Dir.mktmpdir do |dir|
+      spec = File.join(dir, 'thing_spec.rb')
+      File.write(spec, '')
+      config = MutationTester::Configuration.new
+      core = core_for(spec, config)
+      allow(core).to receive(:puts)
+
+      command = core.send(:test_command)
+      allow(core).to receive(:test_command).and_return(command)
+      allow(command).to receive(:run)
+        .and_return(MutationTester::TestCommand::Result.new(false, false, ''))
+
+      expect(core.send(:run_original_tests)).to be false
+      expect(config.baseline_duration).to be_nil
+      expect(config.effective_timeout).to eq(30)
+    end
+  end
+
   it 'spawns the canonical shell-free argv, keeping a hostile spec path as one literal argument' do
     Dir.mktmpdir do |dir|
       spec = File.join(dir, 'a b;c_spec.rb')
@@ -354,6 +394,86 @@ RSpec.describe 'MutationTester::Core#run unparseable source' do
     core = core_for("CONST = Object.new\n")
 
     expect(core.run).to be true
+  end
+end
+
+RSpec.describe 'MutationTester::Core#run with results but zero scored mutants' do
+  def core_with_run_results(results, fail_on_threshold: true)
+    dir = Dir.mktmpdir
+    source = File.join(dir, 'src.rb')
+    spec = File.join(dir, 'src_spec.rb')
+    File.write(source, "x = 1\n")
+    File.write(spec, '')
+
+    config = MutationTester::Configuration.new
+    config.parallel_processes = 1
+    config.fail_on_threshold = fail_on_threshold
+
+    core = MutationTester::Core.new(source, spec, config)
+    allow(core).to receive(:print_header)
+    allow(core).to receive(:run_original_tests).and_return(true)
+    allow(core).to receive(:generate_mutations)
+    allow(core).to receive(:generate_reports)
+    core.instance_variable_set(:@mutations, results.map { |r| { id: r[:id] } })
+    allow(core).to receive(:run_mutations) do
+      core.instance_variable_set(:@results, results)
+    end
+    core
+  end
+
+  def run_capturing_stdout(core)
+    original = $stdout
+    $stdout = StringIO.new
+    returned = core.run
+    [returned, $stdout.string]
+  ensure
+    $stdout = original
+  end
+
+  let(:degraded_results) do
+    [
+      { id: 1, status: :error, killed: false, description: 'Error: boom' },
+      { id: 2, status: :error, killed: false, description: 'Error: boom' },
+      { id: 3, status: :stillborn, killed: false }
+    ]
+  end
+
+  it 'fails the run naming the error and stillborn counts instead of a threshold verdict' do
+    core = core_with_run_results(degraded_results)
+
+    returned, output = run_capturing_stdout(core)
+
+    expect(returned).to be(false)
+    expect(output).to include('none of the 3 mutants could be scored (2 error, 1 stillborn)')
+    expect(output).to match(/infrastructure or runner problem/)
+    expect(output).not_to match(/below threshold/)
+    expect(core.infrastructure_failure?).to be(true)
+  end
+
+  it 'fails even when threshold enforcement is disabled, because no verdict was reached' do
+    core = core_with_run_results(degraded_results, fail_on_threshold: false)
+
+    returned, = run_capturing_stdout(core)
+
+    expect(returned).to be(false)
+    expect(core.infrastructure_failure?).to be(true)
+  end
+
+  it 'keeps the below-threshold wording and a false predicate for a genuine threshold failure' do
+    scored = [
+      { id: 1, status: :killed, killed: true },
+      { id: 2, status: :survived, killed: false },
+      { id: 3, status: :survived, killed: false },
+      { id: 4, status: :survived, killed: false }
+    ]
+    core = core_with_run_results(scored)
+
+    returned, output = run_capturing_stdout(core)
+
+    expect(returned).to be(false)
+    expect(output).to match(/Mutation score 25\.0% is below threshold 80\.0%/)
+    expect(output).not_to match(/infrastructure or runner problem/)
+    expect(core.infrastructure_failure?).to be(false)
   end
 end
 
