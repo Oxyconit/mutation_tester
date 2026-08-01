@@ -21,22 +21,22 @@ module MutationTester
         Process.respond_to?(:fork)
       end
 
-      def acquire(use_bundle_exec:)
+      def acquire(use_bundle_exec:, framework: :rspec)
         return nil unless available?
 
-        key = [Process.pid, use_bundle_exec]
+        key = [Process.pid, use_bundle_exec, framework]
         return registry[key] if registry.key?(key)
 
-        registry[key] = checkout_pooled(use_bundle_exec) || boot(use_bundle_exec)
+        registry[key] = checkout_pooled(pool_key(use_bundle_exec, framework)) || boot(use_bundle_exec, framework)
       end
 
-      def prepare_pool(count, use_bundle_exec:, env_for: nil)
+      def prepare_pool(count, use_bundle_exec:, framework: :rspec, env_for: nil)
         return unless available?
 
-        primary = acquire(use_bundle_exec: use_bundle_exec)
+        primary = acquire(use_bundle_exec: use_bundle_exec, framework: framework)
         return unless primary
 
-        refill_pool(use_bundle_exec, count, primary, env_for: env_for)
+        refill_pool(pool_key(use_bundle_exec, framework), count, primary, env_for: env_for)
       end
 
       def prepare_in_memory_pool(count, primary)
@@ -100,11 +100,15 @@ module MutationTester
 
       private
 
-      def checkout_pooled(use_bundle_exec)
+      def pool_key(use_bundle_exec, framework)
+        [use_bundle_exec, framework]
+      end
+
+      def checkout_pooled(key)
         number = parallel_worker_number
         return nil unless number
 
-        entry = pool[use_bundle_exec]
+        entry = pool[key]
         entry && entry[:runners][number]
       end
 
@@ -123,8 +127,8 @@ module MutationTester
         entry[:runners]
       end
 
-      def boot(use_bundle_exec)
-        runner = new(use_bundle_exec: use_bundle_exec)
+      def boot(use_bundle_exec, framework)
+        runner = new(use_bundle_exec: use_bundle_exec, framework: framework)
         return runner if runner.ready?
 
         runner.shutdown
@@ -133,8 +137,8 @@ module MutationTester
       end
     end
 
-    def initialize(use_bundle_exec:)
-      argv = ['ruby', WORKER_PATH]
+    def initialize(use_bundle_exec:, framework: :rspec)
+      argv = ['ruby', WORKER_PATH, framework.to_s]
       argv = ['bundle', 'exec', *argv] if use_bundle_exec
 
       job_reader, job_writer = IO.pipe
@@ -149,9 +153,16 @@ module MutationTester
       @ready
     end
 
-    def execute(spec_file, timeout: nil, chdir: nil, capture: false, args: [])
+    def execute(spec_file, timeout: nil, chdir: nil, capture: false, args: [], stop_on_first_failure: false)
       log = capture ? Tempfile.new(['mutation_tester_fork', '.log']) : nil
-      job = { spec: spec_file, timeout: timeout, chdir: chdir, log: log&.path, args: args }
+      job = {
+        spec: spec_file,
+        timeout: timeout,
+        chdir: chdir,
+        log: log&.path,
+        args: args,
+        stop_on_first_failure: stop_on_first_failure
+      }
       @job_writer.puts(JSON.generate(job))
       status = await_result(timeout)['status']
       result = TestCommand::Result.new(status == 'pass', status == 'timeout')
@@ -164,8 +175,9 @@ module MutationTester
       log&.unlink
     end
 
-    def preload(spec_file, chdir: nil)
-      @job_writer.puts(JSON.generate(preload: { spec: spec_file, chdir: chdir }))
+    def preload(spec_file, chdir: nil, stop_on_first_failure: false)
+      request = { spec: spec_file, chdir: chdir, stop_on_first_failure: stop_on_first_failure }
+      @job_writer.puts(JSON.generate(preload: request))
       event = read_event(monotonic_time + BOOT_TIMEOUT)
       return [true, nil] if event.is_a?(Hash) && event['event'] == 'preloaded' && event['status'] == 'ok'
 

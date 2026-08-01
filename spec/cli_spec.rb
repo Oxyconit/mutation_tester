@@ -696,11 +696,11 @@ RSpec.describe 'exe/mutation_test batch mode' do
   end
 
   describe '--fail-fast' do
-    it 'stops a single-file run at the first surviving mutant with a clear interruption notice and exit 1' do
+    it 'stops a serial single-file run at the first surviving mutant with a clear interruption notice and exit 1' do
       Dir.mktmpdir do |dir|
         build_project(dir)
         output, status = run_batch(
-          '--fail-fast', 'lib/calc.rb', 'test/calc_test.rb', chdir: dir
+          '--fail-fast', '-p', '1', 'lib/calc.rb', 'test/calc_test.rb', chdir: dir
         )
         expect(status).to eq(1)
         interruption = output.match(/Run interrupted by --fail-fast: a mutant survived after (\d+) of (\d+) mutations/)

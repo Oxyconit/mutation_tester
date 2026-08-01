@@ -103,7 +103,7 @@ RSpec.describe MutationTester::ForkRunner do
       kept = first[1]
       dead.shutdown
       described_class.discard(dead)
-      expect(described_class.pool[false][:runners][0]).to be_nil
+      expect(described_class.pool[[false, :rspec]][:runners][0]).to be_nil
 
       refilled = described_class.prepare_pool(2, use_bundle_exec: false)
 
@@ -164,7 +164,7 @@ RSpec.describe MutationTester::ForkRunner do
       clone = described_class.prepare_pool(1, use_bundle_exec: false).first
       clone.shutdown
       described_class.discard(clone)
-      described_class.registry.delete([Process.pid, false])
+      described_class.registry.delete([Process.pid, false, :rspec])
       allow(Parallel).to receive(:worker_number).and_return(0)
 
       fresh = described_class.acquire(use_bundle_exec: false)
@@ -207,7 +207,7 @@ RSpec.describe MutationTester::ForkRunner do
 
           allow(Parallel).to receive(:worker_number).and_return(1)
           expect(described_class.checkout_in_memory).to equal(clones[1])
-          expect(described_class.pool[false]).to be_nil
+          expect(described_class.pool[[false, :rspec]]).to be_nil
           expect(described_class.acquire(use_bundle_exec: false)).not_to equal(clones[1])
         ensure
           primary.shutdown
@@ -299,6 +299,98 @@ RSpec.describe MutationTester::ForkRunner do
           .to raise_error(MutationTester::Error, /terminated unexpectedly/)
         expect(described_class.registry.values).not_to include(runner)
       end
+    end
+  end
+
+  describe 'minitest workers' do
+    def write_test(dir, name, body)
+      path = File.join(dir, "#{name}_test.rb")
+      File.write(path, <<~RUBY)
+        require 'minitest/autorun'
+
+        class #{name.split('_').map(&:capitalize).join}Test < Minitest::Test
+          #{body}
+        end
+      RUBY
+      path
+    end
+
+    it 'reports a passing, a failing and a timed-out minitest file through one preloaded worker' do
+      Dir.mktmpdir do |dir|
+        pass_test = write_test(dir, 'pass', 'def test_ok; assert true; end')
+        fail_test = write_test(dir, 'fail', 'def test_ok; flunk "boom"; end')
+        loop_test = File.join(dir, 'loop_test.rb')
+        File.write(loop_test, "while true; end\n")
+
+        runner = described_class.acquire(use_bundle_exec: false, framework: :minitest)
+
+        expect(runner.execute(pass_test, timeout: 30).passed?).to be(true)
+        expect(runner.execute(fail_test, timeout: 30).passed?).to be(false)
+
+        looping = runner.execute(loop_test, timeout: 2)
+        expect(looping.passed?).to be(false)
+        expect(looping.timed_out?).to be(true)
+
+        expect(runner.execute(pass_test, timeout: 30).passed?).to be(true)
+      end
+    end
+
+    it 'runs the test file exactly once, so the preloaded worker does not double-run it at process end' do
+      Dir.mktmpdir do |dir|
+        counting_test = File.join(dir, 'counting_test.rb')
+        File.write(counting_test, <<~RUBY)
+          require 'minitest/autorun'
+
+          class CountingTest < Minitest::Test
+            def test_ok
+              File.open(File.join(#{dir.inspect}, 'runs.txt'), 'a') { |f| f.puts('x') }
+              assert true
+            end
+          end
+        RUBY
+
+        runner = described_class.acquire(use_bundle_exec: false, framework: :minitest)
+        expect(runner.execute(counting_test, timeout: 30).passed?).to be(true)
+
+        expect(File.read(File.join(dir, 'runs.txt')).lines.size).to eq(1)
+      end
+    end
+
+    it 'stops a failing minitest file at the first failure only when the job asks for it' do
+      Dir.mktmpdir do |dir|
+        marker_test = lambda do |prefix|
+          path = File.join(dir, "#{prefix}_marker_test.rb")
+          File.write(path, <<~RUBY)
+            require 'minitest/autorun'
+
+            class #{prefix.capitalize}MarkerTest < Minitest::Test
+              %w[a b c].each do |name|
+                define_method("test_\#{name}") do
+                  File.write(File.join(#{dir.inspect}, "#{prefix}-\#{name}.txt"), 'x')
+                  flunk 'boom'
+                end
+              end
+            end
+          RUBY
+          path
+        end
+
+        runner = described_class.acquire(use_bundle_exec: false, framework: :minitest)
+
+        expect(runner.execute(marker_test.call('full'), timeout: 30).passed?).to be(false)
+        expect(Dir.glob(File.join(dir, 'full-*.txt')).size).to eq(3)
+
+        expect(runner.execute(marker_test.call('stopped'), timeout: 30, stop_on_first_failure: true).passed?).to be(false)
+        expect(Dir.glob(File.join(dir, 'stopped-*.txt')).size).to eq(1)
+      end
+    end
+
+    it 'keeps one worker per framework so a minitest file never lands in an rspec-preloaded worker' do
+      rspec_worker = described_class.acquire(use_bundle_exec: false, framework: :rspec)
+      minitest_worker = described_class.acquire(use_bundle_exec: false, framework: :minitest)
+
+      expect(minitest_worker).not_to equal(rspec_worker)
+      expect(worker_pid(minitest_worker)).not_to eq(worker_pid(rspec_worker))
     end
   end
 

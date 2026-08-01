@@ -433,7 +433,7 @@ RSpec.describe MutationTester::BatchRunner do
           core = instance_double(
             MutationTester::Core,
             run: false, mutation_score: 0.0, results: [],
-            interrupted?: false, infrastructure_failure?: true
+            interrupted?: false, stopped_on_survivor?: false, infrastructure_failure?: true
           )
           allow(MutationTester::Core).to receive(:new).and_return(core)
 

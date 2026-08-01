@@ -8,20 +8,23 @@ module MutationTester
     end
 
     POLL_INTERVAL = 0.05
+    MINITEST_FAIL_FAST_PATH = File.expand_path('minitest_fail_fast.rb', __dir__).freeze
 
     attr_reader :spec_file, :framework, :use_bundle_exec, :example_filters
 
-    def initialize(spec_file, use_bundle_exec:, framework: nil, runner: :spawn, example_filters: [], worker_env_var: nil)
+    def initialize(spec_file, use_bundle_exec:, framework: nil, runner: :spawn, example_filters: [], worker_env_var: nil,
+                   stop_on_first_failure: false)
       @spec_file = spec_file
       @framework = framework || self.class.detect_framework(spec_file)
       @use_bundle_exec = use_bundle_exec
       @runner = runner
       @example_filters = @framework == :rspec ? Array(example_filters) : []
       @worker_env_var = worker_env_var
+      @stop_on_first_failure = stop_on_first_failure
     end
 
     def argv
-      parts = [runner, spec_file, *filter_args]
+      parts = [runner, *interpreter_args, spec_file, *filter_args, *fail_fast_args]
       @use_bundle_exec ? ['bundle', 'exec', *parts] : parts
     end
 
@@ -39,8 +42,17 @@ module MutationTester
 
     def run(timeout: nil, chdir: nil, capture: false)
       if fork_execution?
-        fork_runner = ForkRunner.acquire(use_bundle_exec: @use_bundle_exec)
-        return fork_runner.execute(spec_file, timeout: timeout, chdir: chdir || Dir.pwd, capture: capture, args: filter_args) if fork_runner
+        fork_runner = ForkRunner.acquire(use_bundle_exec: @use_bundle_exec, framework: @framework)
+        if fork_runner
+          return fork_runner.execute(
+            spec_file,
+            timeout: timeout,
+            chdir: chdir || Dir.pwd,
+            capture: capture,
+            args: filter_args,
+            stop_on_first_failure: @stop_on_first_failure
+          )
+        end
       end
 
       return run_captured(timeout: timeout, chdir: chdir) if capture
@@ -53,7 +65,6 @@ module MutationTester
     end
 
     def fork_execution?
-      return false if @framework == :minitest
       return false if @runner == :spawn
 
       ForkRunner.available?
@@ -98,6 +109,18 @@ module MutationTester
 
     def filter_args
       example_filters.flat_map { |filter| ['-e', filter] }
+    end
+
+    def interpreter_args
+      return [] unless @stop_on_first_failure && @framework == :minitest
+
+      ['-r', MINITEST_FAIL_FAST_PATH]
+    end
+
+    def fail_fast_args
+      return [] unless @stop_on_first_failure && @framework == :rspec
+
+      ['--fail-fast']
     end
 
     def run_captured(timeout:, chdir:)

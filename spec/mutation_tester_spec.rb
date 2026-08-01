@@ -1062,4 +1062,17 @@ RSpec.describe 'MutationTester::Core#interrupted?' do
     core = core_with(fail_fast: false, results: [{ status: :survived }], total_mutations: 3)
     expect(core.interrupted?).to be false
   end
+
+  it 'still reports the fail-fast stop for a complete run so a batch does not continue past a survivor' do
+    core = core_with(fail_fast: true, results: [{ status: :killed }, { status: :survived }], total_mutations: 2)
+
+    expect(core.stopped_on_survivor?).to be true
+    expect(core.interrupted?).to be false
+  end
+
+  it 'reports no fail-fast stop when every mutant of a complete run was killed' do
+    core = core_with(fail_fast: true, results: [{ status: :killed }], total_mutations: 1)
+
+    expect(core.stopped_on_survivor?).to be false
+  end
 end

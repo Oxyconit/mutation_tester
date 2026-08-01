@@ -10,14 +10,17 @@ force a runner.
 Every mutant is executed by one of three runners:
 
 - **fork**: a helper process preloads the environment
-  once (RubyGems, Bundler and `rspec-core`, without loading the mutated file or
-  the specs), and each mutant runs in a fresh fork of that process. The fork
-  loads the spec only after the mutated source has been written, so every
-  mutant is visible and no state leaks between mutants. This removes most of
+  once (RubyGems, Bundler and the test framework: `rspec-core` for RSpec,
+  `minitest` for Minitest, without loading the mutated file or the tests), and
+  each mutant runs in a fresh fork of that process. The fork loads the test file
+  only after the mutated source has been written, so every mutant is visible and
+  no state leaks between mutants. For Minitest the worker disables the
+  `minitest/autorun` at-exit hook and drives `Minitest.run` itself, so the file
+  runs exactly once per mutant. This removes most of
   the fixed per-mutant boot cost, which matters on large suites and in CI.
-- **spawn**: each mutant starts a full new process (`bundle exec rspec ...`).
-  Slower per mutant, but works everywhere.
-- **in_memory** (default where supported): the helper process additionally preloads the spec
+- **spawn**: each mutant starts a full new process (`bundle exec rspec ...` or
+  `bundle exec ruby test_file.rb`). Slower per mutant, but works everywhere.
+- **in_memory** (default where supported): the helper process additionally preloads the test
   file and, through it, the original source, once per run. Each mutant then
   runs in a fresh fork that re-evaluates the mutated source in memory
   (redefining the loaded methods and class constants, with the
@@ -34,15 +37,16 @@ Selection is automatic (`auto`): the fastest safe path is tried first and every
 step down to a slower one prints a single stderr warning with its reason, so a
 fallback is never silent. The order is `in_memory` (RSpec with `Process.fork`
 available and a passing unmutated-source probe), then `fork`, then `spawn`.
+Both RSpec and Minitest suites use the same three runners.
 All runners produce identical scores and per-mutant statuses, and all enforce
 the same hard per-mutant timeout (monotonic deadline plus a process-group
 kill).
 
 | Mode        | Picked by `auto` when                                                                                                                                                   | Falls back to                                                                                                                              |
 |-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
-| `in_memory` | the suite is RSpec, the platform has `Process.fork`, the file has no load-time `defined?` guard, and re-applying the unmutated source in a probe child passes the suite | `fork`/`spawn` (whole run) with a stderr warning naming the reason; a single worker dying mid-run falls back only for its share of mutants; a mutant that raises while being applied falls back alone |
-| `fork`      | the suite is RSpec, `Process.fork` is available, but in-memory is unavailable (each reason is printed)                                                                  | `spawn`, with a stderr warning, when the helper process fails to preload the environment                                                   |
-| `spawn`     | the suite is Minitest, or the platform has no `Process.fork`                                                                                                            | nothing; it works everywhere                                                                                                               |
+| `in_memory` | the platform has `Process.fork`, the file has no load-time `defined?` guard, and re-applying the unmutated source in a probe child passes the suite | `fork`/`spawn` (whole run) with a stderr warning naming the reason; a single worker dying mid-run falls back only for its share of mutants; a mutant that raises while being applied falls back alone |
+| `fork`      | `Process.fork` is available, but in-memory is unavailable (each reason is printed)                                                                                      | `spawn`, with a stderr warning, when the helper process fails to preload the environment                                                   |
+| `spawn`     | the platform has no `Process.fork`                                                                                                                                      | nothing; it works everywhere                                                                                                               |
 
 Forcing a mode with `--runner fork|spawn|in_memory` skips the auto attempts and
 uses that mode directly (`in_memory` keeps its own documented safety fallbacks;
@@ -77,10 +81,31 @@ MutationTester.configure do |config|
 end
 ```
 
+### Stopping a mutant at its first failing test
+
+Every mutant run stops as soon as one test fails, on all three runners:
+
+- RSpec mutant runs are given `--fail-fast` (as a CLI argument on `spawn`, in the
+  runner arguments on `fork`, and in the preloaded configuration on `in_memory`).
+- Minitest mutant runs load `lib/mutation_tester/minitest_fail_fast.rb`, which
+  registers a Minitest plugin whose reporter raises `Interrupt` on the first
+  non-passing result. On `spawn` the file is preloaded with `ruby -r`, on the
+  preloaded runners the worker enables the same reporter per job.
+
+This cannot change a verdict. A run that stops early has already recorded a
+failure, which is exactly what makes a mutant killed, and a run without a failure
+is untouched and executes every test. Only the mutant runs opt in: the baseline
+run and the shadow-workspace sanity check are expected to pass and always run the
+whole file, so a failing baseline still reports every failure it finds.
+
+The pathological case it removes is a mutant that breaks something every test
+touches (a class body that no longer loads, a constant every test reads). Such a
+mutant used to re-raise the same error once per test, which on a large test file
+can cross the per-mutant deadline and be reported as a `timeout` instead of a
+`killed`, and which gets worse as tests are added to the file.
+
 ### Limitations of the fork runner
 
-- Minitest suites always use `spawn` (fork support for Minitest is a separate
-  decision after RSpec experience is collected).
 - Platforms without `Process.fork` (for example Windows or JRuby) always use
   `spawn`, even when `--runner fork` is requested.
 - If the helper process fails to preload the environment, the run warns once
@@ -92,8 +117,8 @@ The in-memory runner never fails silently: each case below falls back to
 file-based execution with a warning, and a mutant is marked `error` only when
 no fallback is possible.
 
-- RSpec only, and the file must be classic loadable code (classes/modules).
-  Minitest suites fall back to the file-based path with a warning.
+- The file must be classic loadable code (classes/modules) that survives being
+  evaluated a second time.
 - With `-p N` (N > 1) the run stays fully in memory: the environment, the
   original source and the specs are preloaded once, the preloaded process is
   forked into N pooled clones, and every parallel worker applies each mutant
