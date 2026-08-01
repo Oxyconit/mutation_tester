@@ -44,10 +44,12 @@ module MutationTester
       ForkRunner.shutdown_all
     end
 
+    def stopped_on_survivor?
+      @config.fail_fast && @results.any? { |result| result[:status] == :survived }
+    end
+
     def interrupted?
-      @config.fail_fast &&
-        @results.size < @mutations.size &&
-        @results.any? { |result| result[:status] == :survived }
+      stopped_on_survivor? && @results.size < @mutations.size
     end
 
     def mutation_score

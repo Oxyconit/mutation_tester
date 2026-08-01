@@ -390,19 +390,18 @@ module MutationTester
     end
 
     def prepare_in_memory_execution
-      return 'the in-memory runner supports RSpec suites only' unless detect_test_framework(@spec_file) == :rspec
       return 'Process.fork is not supported on this platform' unless ForkRunner.available?
       if InMemoryLoader.load_time_defined_guard?(@original_content)
         return 'the source file uses defined? at load time, so redefinition would silently skip the guarded code'
       end
 
-      runner = ForkRunner.new(use_bundle_exec: @use_bundle_exec)
+      runner = ForkRunner.new(use_bundle_exec: @use_bundle_exec, framework: detect_test_framework(@spec_file))
       unless runner.ready?
         runner.shutdown
         return 'the in-memory worker failed to preload the environment'
       end
 
-      preloaded, message = runner.preload(@spec_file, chdir: Dir.pwd)
+      preloaded, message = runner.preload(@spec_file, chdir: Dir.pwd, stop_on_first_failure: true)
       unless preloaded
         runner.shutdown
         return "the spec file could not be preloaded (#{message})"
@@ -521,6 +520,7 @@ module MutationTester
       ForkRunner.prepare_pool(
         [@config.parallel_processes, total].min,
         use_bundle_exec: @use_bundle_exec,
+        framework: detect_test_framework(@spec_file),
         env_for: worker_env_for
       )
     end
@@ -637,7 +637,8 @@ module MutationTester
         use_bundle_exec: @use_bundle_exec,
         runner: @config.runner,
         example_filters: example_filters,
-        worker_env_var: @config.worker_env_var
+        worker_env_var: @config.worker_env_var,
+        stop_on_first_failure: true
       )
     end
   end

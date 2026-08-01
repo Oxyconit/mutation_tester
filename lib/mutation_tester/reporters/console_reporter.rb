@@ -20,6 +20,7 @@ module MutationTester
         puts "  #{Rainbow("Killed: " + killed_count.to_s).green} ✅"
         puts "  #{Rainbow("Survived: " + survived_count.to_s).red} ❌"
         puts "  #{Rainbow("Timeout: " + timeout_count.to_s).yellow} ⏱️"
+        print_timeout_deadline
         puts "  #{Rainbow("Stillborn: " + stillborn_count.to_s).yellow} 🧬"
         puts "  #{Rainbow("Errors: " + error_count.to_s).yellow} 💥"
         print_excluded_summary
@@ -27,6 +28,30 @@ module MutationTester
         puts "  Mutation Score: #{Rainbow(mutation_score.to_s + "%").bright}"
         puts "  Quality: #{quality_rating}"
         puts "\n  " + progress_bar
+      end
+
+      def print_timeout_deadline
+        return unless timeout_count.positive?
+
+        puts "    #{Rainbow("deadline: " + timeout_deadline_description).yellow}"
+      end
+
+      def timeout_deadline_description
+        deadline = @config.effective_timeout
+        return 'none (no deadline configured)' if deadline.nil?
+
+        "#{format_seconds(deadline)} #{deadline_origin}"
+      end
+
+      def deadline_origin
+        baseline = @config.baseline_duration
+        return '(explicitly configured)' if @config.timeout_explicitly_set? || baseline.nil?
+
+        "(#{format('%g', @config.timeout_factor)}x baseline #{format_seconds(baseline)})"
+      end
+
+      def format_seconds(value)
+        "#{format('%.2f', value)}s"
       end
 
       def print_excluded_summary

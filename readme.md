@@ -55,7 +55,7 @@ MutationTester keeps its requirements low so it drops into a wide range of proje
 |-------------------------|-----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Ruby                    | `>= 3.0`        | Floor is Ruby 3.0. CI runs the suite on 3.0, 3.1, 3.2 and 3.3. The gem is developed on Ruby 4.0.2, and 4.x is supported. Ruby 4.x has no prebuilt binary on the GitHub-hosted runners yet, so it is verified on the development host rather than in the CI matrix. |
 | RSpec (your project)    | `3.x`           | The gem shells out to your project's own `rspec`, so any RSpec 3.x works. Both ends of the range are exercised by a real mutation run: the lowest 3.0.x line in the CI framework matrix, and 3.13.x in the example jobs.                                           |
-| Minitest (your project) | `5.x` and `6.x` | The gem shells out to your project's own `ruby test_file.rb`, so both the 5.x and 6.x lines work. Both are exercised by a real mutation run: 5.x in the example jobs, and 6.x in the CI framework matrix.                                                          |
+| Minitest (your project) | `5.x` and `6.x` | The gem runs your project's own test file (`ruby test_file.rb`, or the same file inside a preloaded fork worker), so both the 5.x and 6.x lines work. Both are exercised by a real mutation run: 5.x in the example jobs, and 6.x in the CI framework matrix.                                                          |
 
 Notes:
 
@@ -200,7 +200,7 @@ mutation_test [OPTIONS] --glob 'lib/**/*.rb'
 | Flag | Description |
 |---|---|
 | `-p, --parallel N` | Run with N parallel processes (default: auto, derived from the CPU core count with a cap of 8; `-p 1` forces serial execution). |
-| `--runner MODE` | Mutant execution runner: `auto` (default) tries `in_memory` first (RSpec with `Process.fork` available and a passing unmutated-source probe), then falls back to `fork`, then `spawn`, announcing every step down on stderr with its reason; `fork` (preloaded environment, RSpec on platforms with `Process.fork`), `spawn` (one full process per mutant) and `in_memory` (mutations applied in child-process memory, zero file writes per mutant, RSpec only) force the specific mode. See [Execution runners](#execution-runners-fork-spawn-in-memory). |
+| `--runner MODE` | Mutant execution runner: `auto` (default) tries `in_memory` first (`Process.fork` available and a passing unmutated-source probe), then falls back to `fork`, then `spawn`, announcing every step down on stderr with its reason; `fork` (preloaded environment, on platforms with `Process.fork`), `spawn` (one full process per mutant) and `in_memory` (mutations applied in child-process memory, zero file writes per mutant) force the specific mode. See [Execution runners](#execution-runners-fork-spawn-in-memory). |
 | `--staged` | Mutation-test the files staged in git (`git diff --cached --name-only`; files staged as deleted are ignored), mapping each to its spec like a positional `FILE` list. Cannot be combined with positional arguments or `--glob`. See [File lists and --staged](#file-lists-and---staged-test-what-you-changed). |
 | `--glob PATTERN` | Batch mode: mutation-test every source file matching `PATTERN`, mapping each to its spec by convention (see [Batch mode](#batch-mode-run-many-files-in-one-command)). |
 | `--spec-glob TEMPLATE` | Spec-mapping template with a `{name}` placeholder (default: `spec/{name}_spec.rb`). Requires a positional `FILE` list, `--staged`, or `--glob`. |
@@ -597,18 +597,18 @@ the fastest safe one, announcing every fallback on stderr:
 
 - **in_memory** (default where supported): re-evaluates the mutated source in the
   memory of a fresh fork of a preloaded process, with zero file writes per mutant
-  and no shadow workspaces. RSpec only; the fastest path. Mutations that only take
-  effect at class-load time (constants consumed by macros, `validates`/`has_many`/
+  and no shadow workspaces. RSpec and Minitest; the fastest path. Mutations that only
+  take effect at class-load time (constants consumed by macros, `validates`/`has_many`/
   `before_save`/`scope`/`attribute`, anything inside an `included do` block) cannot
   be observed by re-evaluating source in a preloaded process, so those mutants are
   routed automatically to the file-based path and the rest still run in memory (see
   below); the combined score matches a full `fork` run.
-- **fork**: preloads the environment once (RubyGems, Bundler, `rspec-core`) and
-  forks a fresh child per mutant. RSpec on platforms with `Process.fork`; removes
-  most of the fixed per-mutant boot cost.
-- **spawn**: starts one full process per mutant (`bundle exec rspec ...`). Slower
-  per mutant, but works everywhere (the only runner for Minitest and for
-  platforms without `Process.fork`).
+- **fork**: preloads the environment once (RubyGems, Bundler, the test framework)
+  and forks a fresh child per mutant. RSpec and Minitest on platforms with
+  `Process.fork`; removes most of the fixed per-mutant boot cost.
+- **spawn**: starts one full process per mutant (`bundle exec rspec ...` or
+  `bundle exec ruby test_file.rb`). Slower per mutant, but works everywhere
+  (the only runner on platforms without `Process.fork`).
 
 `auto` tries `in_memory`, then `fork`, then `spawn`; every step down prints one
 stderr warning with its reason, so a fallback is never silent. All runners
@@ -628,9 +628,9 @@ do not need to pick `--runner fork` for correctness on load-time code.
 
 | Mode        | Picked by `auto` when                                                                                                                                                   | Falls back to                                                                                                                              |
 |-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
-| `in_memory` | the suite is RSpec, the platform has `Process.fork`, the file has no load-time `defined?` guard, and re-applying the unmutated source in a probe child passes the suite | `fork`/`spawn` (whole run) with a stderr warning naming the reason; a single worker dying mid-run falls back only for its share of mutants; a mutant that raises while being applied falls back alone |
-| `fork`      | the suite is RSpec, `Process.fork` is available, but in-memory is unavailable (each reason is printed)                                                                  | `spawn`, with a stderr warning, when the helper process fails to preload the environment                                                   |
-| `spawn`     | the suite is Minitest, or the platform has no `Process.fork`                                                                                                            | nothing; it works everywhere                                                                                                               |
+| `in_memory` | the platform has `Process.fork`, the file has no load-time `defined?` guard, and re-applying the unmutated source in a probe child passes the suite | `fork`/`spawn` (whole run) with a stderr warning naming the reason; a single worker dying mid-run falls back only for its share of mutants; a mutant that raises while being applied falls back alone |
+| `fork`      | `Process.fork` is available, but in-memory is unavailable (each reason is printed)                                                                                      | `spawn`, with a stderr warning, when the helper process fails to preload the environment                                                   |
+| `spawn`     | the platform has no `Process.fork`                                                                                                                                      | nothing; it works everywhere                                                                                                               |
 
 Force a specific runner (skipping the auto attempts) with the `--runner
 fork|spawn|in_memory` flag, the `MUTATION_TESTER_RUNNER` environment variable, or
@@ -647,6 +647,22 @@ speed. For the full per-runner mechanics, when to force each one, and the comple
 fork and in-memory limitation lists (frozen classes, load-time `defined?` guards,
 worker-death fallback, `require_relative` idempotency), see
 [docs/execution-runners.md](docs/execution-runners.md#execution-runners-fork-spawn-in-memory).
+
+### Stopping a mutant at its first failing test
+
+A mutant only needs one failing test to be killed, so every mutant run stops at
+its first failure: RSpec mutant runs get `--fail-fast`, and Minitest mutant runs
+get a preloaded reporter that aborts the run the same way (both on the file-based
+runners and inside the preloaded fork worker). This never changes a verdict, only
+the work done to reach it: a run that stops early had already failed, and a run
+with no failure is unaffected and still executes every test.
+
+It matters most for a mutant that breaks something every test touches (a broken
+class body, a constant every example reads). Such a mutant used to pay the full
+test file once per mutant, which on a large test file can exceed the per-mutant
+deadline and turn a decided kill into a reported timeout. Adding tests to the file
+then made the score worse. The baseline run and the shadow sanity check are
+unaffected: they are expected to pass, and a passing run runs every test.
 
 ### Test selection (fast kill with full-file confirmation)
 
@@ -740,6 +756,18 @@ few lines of surrounding context:
         end
   💡 Suggestion: Add tests to verify behavior for each of the 2 variants above
 ```
+
+When at least one mutant timed out, the summary also names the deadline those
+mutants were measured against and where it came from, so a genuine hang and a
+deadline calibrated from a slow test file are distinguishable at a glance:
+
+```
+  Timeout: 3 ⏱️
+    deadline: 6.50s (5x baseline 1.30s)
+```
+
+With an explicit `config.timeout` / `--timeout` the same line reads
+`deadline: 30.00s (explicitly configured)`.
 
 ### HTML report
 

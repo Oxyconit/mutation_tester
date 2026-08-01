@@ -1,12 +1,21 @@
 # frozen_string_literal: true
 
 require 'json'
-require 'rspec/core'
 require_relative '../in_memory_loader'
 
 control = $stdout.dup
 control.sync = true
 STDOUT.reopen(File::NULL)
+
+framework = ARGV.shift == 'minitest' ? :minitest : :rspec
+
+if framework == :minitest
+  require 'minitest'
+  require_relative '../minitest_fail_fast'
+  Minitest.class_variable_set(:@@installed_at_exit, true)
+else
+  require 'rspec/core'
+end
 
 kill_group = lambda do |pid|
   begin
@@ -91,10 +100,25 @@ supervise_child = lambda do |job, out, child_body|
   [timed_out, payload, reaped]
 end
 
+load_test_file = lambda do |path|
+  $PROGRAM_NAME = path
+  load(path)
+end
+
+run_test_file = lambda do |job|
+  if framework == :minitest
+    MutationTester::MinitestFailFast.enabled = job['stop_on_first_failure'] ? true : false
+    load_test_file.call(job['spec'])
+    Minitest.run(Array(job['args'])) ? 0 : 1
+  else
+    args = [job['spec'], *Array(job['args'])]
+    args << '--fail-fast' if job['stop_on_first_failure']
+    RSpec::Core::Runner.run(args, STDERR, STDOUT).to_i
+  end
+end
+
 run_job = lambda do |job, out|
-  timed_out, payload, reaped = supervise_child.call(job, out, lambda do
-    RSpec::Core::Runner.run([job['spec'], *Array(job['args'])], STDERR, STDOUT).to_i
-  end)
+  timed_out, payload, reaped = supervise_child.call(job, out, lambda { run_test_file.call(job) })
 
   status =
     if timed_out
@@ -111,13 +135,29 @@ end
 preload_specs = lambda do |request, out|
   begin
     Dir.chdir(request['chdir']) if request['chdir']
-    sink = File.open(File::NULL, 'w')
-    runner = RSpec::Core::Runner.new(RSpec::Core::ConfigurationOptions.new([request['spec']]))
-    runner.setup(sink, sink)
-    preloaded = runner
+    if framework == :minitest
+      MutationTester::MinitestFailFast.enabled = request['stop_on_first_failure'] ? true : false
+      load_test_file.call(request['spec'])
+      preloaded = true
+    else
+      sink = File.open(File::NULL, 'w')
+      options = [request['spec']]
+      options << '--fail-fast' if request['stop_on_first_failure']
+      runner = RSpec::Core::Runner.new(RSpec::Core::ConfigurationOptions.new(options))
+      runner.setup(sink, sink)
+      preloaded = runner
+    end
     out.puts(JSON.generate('event' => 'preloaded', 'status' => 'ok'))
   rescue ScriptError, StandardError => e
     out.puts(JSON.generate('event' => 'preloaded', 'status' => 'error', 'message' => "#{e.class}: #{e.message}"))
+  end
+end
+
+run_preloaded_suite = lambda do
+  if framework == :minitest
+    Minitest.run([]) ? 0 : 1
+  else
+    preloaded.run_specs(RSpec.world.ordered_example_groups).to_i
   end
 end
 
@@ -132,7 +172,7 @@ run_in_memory_job = lambda do |job, out|
   timed_out, payload, reaped = supervise_child.call(job, out, lambda do
     begin
       MutationTester::InMemoryLoader.apply(request['source'], request['path'])
-      JSON.generate('code' => preloaded.run_specs(RSpec.world.ordered_example_groups).to_i)
+      JSON.generate('code' => run_preloaded_suite.call)
     rescue ScriptError, StandardError => e
       JSON.generate('error' => "#{e.class}: #{e.message}")
     end

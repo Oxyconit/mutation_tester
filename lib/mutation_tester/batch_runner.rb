@@ -199,7 +199,7 @@ module MutationTester
         interrupted: core.interrupted?,
         degraded: core.infrastructure_failure?
       )
-      [entry, core.interrupted?]
+      [entry, core.stopped_on_survivor?]
     end
 
     def spec_path_for(source_file)

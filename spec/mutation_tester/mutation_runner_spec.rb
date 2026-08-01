@@ -808,6 +808,22 @@ RSpec.describe MutationTester::MutationRunner do
       config
     end
 
+    def write_minitest_file
+      test_file = File.join(project_root, 'test', 'calc_test.rb')
+      FileUtils.mkdir_p(File.dirname(test_file))
+      File.write(test_file, <<~RUBY)
+        require 'minitest/autorun'
+        require_relative '../lib/calc'
+
+        class CalcTest < Minitest::Test
+          def test_add
+            assert_equal 3, Calc.new.add(1, 2)
+          end
+        end
+      RUBY
+      test_file
+    end
+
     it 'falls back to file-based execution with a message when the source has a load-time defined? guard' do
       source = original_source.sub('LIMIT = 5', 'LIMIT = 5 unless defined?(Calc::LIMIT)')
       File.write(source_file, source)
@@ -864,26 +880,51 @@ RSpec.describe MutationTester::MutationRunner do
       expect(results.map { |r| r[:status] }).to eq([:killed])
     end
 
-    it 'falls back with a message for minitest suites' do
-      test_file = File.join(project_root, 'test', 'calc_test.rb')
-      FileUtils.mkdir_p(File.dirname(test_file))
-      File.write(test_file, <<~RUBY)
-        require 'minitest/autorun'
-        require_relative '../lib/calc'
-
-        class CalcTest < Minitest::Test
-          def test_add
-            assert_equal 3, Calc.new.add(1, 2)
+    it 'stops a killed mutant at the first failing example instead of running the whole file' do
+      marker_dir = File.join(tmp_dir, 'markers')
+      FileUtils.mkdir_p(marker_dir)
+      source = <<~RUBY
+        class Calc
+          def add(a, b)
+            a + b
           end
         end
       RUBY
+      File.write(source_file, source)
+      File.write(spec_file, <<~RUBY)
+        require_relative '../lib/calc'
+
+        RSpec.describe Calc do
+          %w[a b c].each do |name|
+            it("adds \#{name}") do
+              begin
+                expect(Calc.new.add(1, 2)).to eq(3)
+              rescue RSpec::Expectations::ExpectationNotMetError
+                File.write(File.join(#{marker_dir.inspect}, "\#{name}.txt"), 'x')
+                raise
+              end
+            end
+          end
+        end
+      RUBY
+      runner = described_class.new(source_file, spec_file, source, build_config(:in_memory))
+      muts = [{ id: 1, type: :arithmetic, line: 3, description: 'covered', code: source.sub('a + b', 'a - b') }]
+
+      results = Dir.chdir(project_root) { runner.run(muts) }
+
+      expect(results.map { |r| r[:status] }).to eq([:killed])
+      expect(Dir.glob(File.join(marker_dir, '*.txt')).size).to eq(1)
+    end
+
+    it 'runs a minitest suite in memory instead of falling back to a file-based runner' do
+      test_file = write_minitest_file
       config = build_config(:in_memory)
       runner = described_class.new(source_file, test_file, original_source, config)
       muts = [mutations[0], mutations[2]]
 
       results = nil
       expect { results = Dir.chdir(project_root) { runner.run(muts) } }
-        .to output(/In-memory execution is unavailable: .*RSpec.*Falling back to file-based execution/m).to_stderr
+        .not_to output(/Falling back to file-based execution/).to_stderr
 
       expect(results.map { |r| r[:status] }).to eq(%i[killed survived])
     end
@@ -1057,27 +1098,30 @@ RSpec.describe MutationTester::MutationRunner do
       expect(results.map { |r| r[:status] }).to eq([:killed])
     end
 
-    it 'steps a minitest suite down to spawn with an explicit reason and without booting any worker' do
-      test_file = File.join(project_root, 'test', 'calc_test.rb')
-      FileUtils.mkdir_p(File.dirname(test_file))
-      File.write(test_file, <<~RUBY)
-        require 'minitest/autorun'
-        require_relative '../lib/calc'
-
-        class CalcTest < Minitest::Test
-          def test_add
-            assert_equal 3, Calc.new.add(1, 2)
-          end
-        end
-      RUBY
-      expect(MutationTester::ForkRunner).not_to receive(:new)
-      config = build_config(:auto)
-      runner = described_class.new(source_file, test_file, original_source, config)
+    it 'reports the same minitest statuses in memory as the spawn runner does' do
+      test_file = write_minitest_file
       muts = [mutations[0], mutations[2]]
 
-      results = nil
-      expect { results = Dir.chdir(project_root) { runner.run(muts) } }
-        .to output(/In-memory execution is unavailable: .*RSpec.*Falling back to file-based execution \(spawn\)\./m).to_stderr
+      in_memory_results = Dir.chdir(project_root) do
+        described_class.new(source_file, test_file, original_source, build_config(:in_memory)).run(muts)
+      end
+      spawn_results = Dir.chdir(project_root) do
+        described_class.new(source_file, test_file, original_source, build_config(:spawn)).run(muts)
+      end
+
+      expect(in_memory_results.map { |r| r[:status] }).to eq(spawn_results.map { |r| r[:status] })
+      expect(in_memory_results.map { |r| r[:status] }).to eq(%i[killed survived])
+    end
+
+    it 'runs a minitest suite through a preloaded fork worker in fork mode' do
+      test_file = write_minitest_file
+      runner = described_class.new(source_file, test_file, original_source, build_config(:fork))
+      muts = [mutations[0], mutations[2]]
+
+      expect(MutationTester::ForkRunner).to receive(:acquire)
+        .with(use_bundle_exec: anything, framework: :minitest).at_least(:once).and_call_original
+
+      results = Dir.chdir(project_root) { runner.run(muts) }
 
       expect(results.map { |r| r[:status] }).to eq(%i[killed survived])
     end
@@ -1217,7 +1261,7 @@ RSpec.describe MutationTester::MutationRunner do
     it 'prepares one shared preload pool in the parent before the workers start' do
       run_with(processes: 2)
 
-      entry = MutationTester::ForkRunner.pool[false]
+      entry = MutationTester::ForkRunner.pool[[false, :rspec]]
       expect(entry).not_to be_nil
       expect(entry[:owner]).to eq(Process.pid)
       expect(entry[:runners].compact.size).to eq(2)

@@ -103,6 +103,22 @@ RSpec.describe MutationTester::TestCommand do
       expect(cmd.argv).to eq(['ruby', 'test/foo_test.rb'])
       expect(cmd.example_filters).to be_empty
     end
+
+    it 'asks rspec to stop at the first failing example for a mutant run' do
+      cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, stop_on_first_failure: true)
+      expect(cmd.argv).to eq(['rspec', 'spec/foo_spec.rb', '--fail-fast'])
+    end
+
+    it 'preloads the fail-fast reporter before the file for a minitest mutant run' do
+      cmd = described_class.new('test/foo_test.rb', use_bundle_exec: false, stop_on_first_failure: true)
+      expect(cmd.argv).to eq(['ruby', '-r', described_class::MINITEST_FAIL_FAST_PATH, 'test/foo_test.rb'])
+      expect(File.exist?(described_class::MINITEST_FAIL_FAST_PATH)).to be(true)
+    end
+
+    it 'runs the whole file when stopping at the first failure was not requested' do
+      expect(described_class.new('spec/foo_spec.rb', use_bundle_exec: false).argv).not_to include('--fail-fast')
+      expect(described_class.new('test/foo_test.rb', use_bundle_exec: false).argv).not_to include('-r')
+    end
   end
 
   describe '#fork_execution?' do
@@ -129,10 +145,10 @@ RSpec.describe MutationTester::TestCommand do
       expect(cmd.fork_execution?).to be(false)
     end
 
-    it 'keeps minitest on the spawn path regardless of the requested runner' do
+    it 'selects fork for minitest too when the platform can fork' do
       allow(MutationTester::ForkRunner).to receive(:available?).and_return(true)
       cmd = described_class.new('test/foo_test.rb', use_bundle_exec: false, runner: :fork)
-      expect(cmd.fork_execution?).to be(false)
+      expect(cmd.fork_execution?).to be(true)
     end
   end
 
@@ -142,9 +158,9 @@ RSpec.describe MutationTester::TestCommand do
       result = MutationTester::TestCommand::Result.new(true, false)
       allow(MutationTester::ForkRunner).to receive(:available?).and_return(true)
       allow(MutationTester::ForkRunner).to receive(:acquire)
-        .with(use_bundle_exec: false).and_return(fork_runner)
+        .with(use_bundle_exec: false, framework: :rspec).and_return(fork_runner)
       expect(fork_runner).to receive(:execute)
-        .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: [])
+        .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: [], stop_on_first_failure: false)
         .and_return(result)
 
       cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, runner: :fork)
@@ -156,9 +172,9 @@ RSpec.describe MutationTester::TestCommand do
       result = MutationTester::TestCommand::Result.new(true, false)
       allow(MutationTester::ForkRunner).to receive(:available?).and_return(true)
       allow(MutationTester::ForkRunner).to receive(:acquire)
-        .with(use_bundle_exec: false).and_return(fork_runner)
+        .with(use_bundle_exec: false, framework: :rspec).and_return(fork_runner)
       expect(fork_runner).to receive(:execute)
-        .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: ['-e', '#foo'])
+        .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: ['-e', '#foo'], stop_on_first_failure: false)
         .and_return(result)
 
       cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, runner: :fork, example_filters: ['#foo'])

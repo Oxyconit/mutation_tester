@@ -70,6 +70,54 @@ RSpec.describe MutationTester::Reporters::ConsoleReporter do
       end
     end
 
+    context 'with mutants that ran into the deadline' do
+      let(:results) do
+        [
+          { id: 1, status: :killed, killed: true, line: 1, type: :arithmetic, description: 'k' },
+          { id: 2, status: :timeout, killed: true, timeout: true, line: 2, type: :arithmetic, description: 't' }
+        ]
+      end
+
+      it 'names the deadline the mutants were measured against and the baseline it came from' do
+        config.timeout_factor = 5
+        config.baseline_duration = 1.3
+
+        output = capture_stdout { reporter.generate }
+
+        expect(output).to include('deadline: 6.50s (5x baseline 1.30s)')
+      end
+
+      it 'keeps the calibration floor visible when the baseline is fast' do
+        config.timeout_factor = 5
+        config.baseline_duration = 0.2
+
+        output = capture_stdout { reporter.generate }
+
+        expect(output).to include('deadline: 5.00s')
+      end
+
+      it 'says the deadline was configured by hand instead of inventing a baseline multiple' do
+        config.timeout = 30
+        config.baseline_duration = 1.3
+
+        output = capture_stdout { reporter.generate }
+
+        expect(output).to include('deadline: 30.00s (explicitly configured)')
+      end
+    end
+
+    context 'with no mutant that ran into the deadline' do
+      let(:results) do
+        [{ id: 1, status: :killed, killed: true, line: 1, type: :arithmetic, description: 'k' }]
+      end
+
+      it 'prints no deadline line at all' do
+        config.baseline_duration = 1.3
+
+        expect(capture_stdout { reporter.generate }).not_to include('deadline:')
+      end
+    end
+
     context 'with kill phases recorded by two-phase test selection' do
       let(:results) do
         [
