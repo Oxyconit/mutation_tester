@@ -335,6 +335,42 @@ RSpec.describe MutationTester::ForkRunner do
       end
     end
 
+    it 'resolves a mirrored $LOAD_PATH entry inside the workspace, not in the project the worker booted in' do
+      Dir.mktmpdir do |dir|
+        project = File.join(dir, 'project')
+        workspace = File.join(dir, 'workspace')
+        [project, workspace].each { |root| FileUtils.mkdir_p(File.join(root, 'lib')) }
+        File.write(File.join(project, 'lib', 'thing.rb'), "THING = :project\n")
+        File.write(File.join(workspace, 'lib', 'thing.rb'), "THING = :workspace\n")
+        test_file = File.join(workspace, 'thing_test.rb')
+        File.write(test_file, <<~RUBY)
+          require 'minitest/autorun'
+          require 'thing'
+
+          class ThingTest < Minitest::Test
+            def test_workspace_copy
+              assert_equal :workspace, THING
+            end
+          end
+        RUBY
+
+        previous = ENV['RUBYOPT']
+        ENV['RUBYOPT'] = [previous, '-Ilib'].compact.join(' ')
+        runner = begin
+          Dir.chdir(project) { described_class.new(use_bundle_exec: false, framework: :minitest) }
+        ensure
+          ENV['RUBYOPT'] = previous
+        end
+
+        begin
+          expect(runner.execute(test_file, timeout: 30, chdir: workspace, mirror_of: project).passed?).to be(true)
+          expect(runner.execute(test_file, timeout: 30, chdir: workspace).passed?).to be(false)
+        ensure
+          runner.shutdown
+        end
+      end
+    end
+
     it 'runs the test file exactly once, so the preloaded worker does not double-run it at process end' do
       Dir.mktmpdir do |dir|
         counting_test = File.join(dir, 'counting_test.rb')

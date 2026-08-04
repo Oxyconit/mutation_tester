@@ -1,12 +1,15 @@
 module MutationTester
   module Reporters
     class ConsoleReporter < BaseReporter
+      NOTHING_KILLED_MIN_MUTANTS = 5
+
       def generate
         puts "\n" + Rainbow('=' * 80).bright
         puts Rainbow('🧬 MUTATION TESTING REPORT').bright.cyan
         puts Rainbow('=' * 80).bright
 
         print_summary
+        print_nothing_killed_warning
         print_survived_mutations if survived_count > 0
 
         puts "\n" + Rainbow('=' * 80).bright
@@ -28,6 +31,23 @@ module MutationTester
         puts "  Mutation Score: #{Rainbow(mutation_score.to_s + "%").bright}"
         puts "  Quality: #{quality_rating}"
         puts "\n  " + progress_bar
+      end
+
+      def print_nothing_killed_warning
+        return unless nothing_killed?
+
+        puts "\n#{Rainbow("⚠️  Not one of the #{scored_mutant_count} scored mutants was killed.").yellow}"
+        puts Rainbow('   A whole file that kills nothing is more often a runner problem (the mutated code never').yellow
+        puts Rainbow('   reached the tests) than a test-quality gap. Re-run with --runner spawn and compare before').yellow
+        puts Rainbow('   acting on this score.').yellow
+      end
+
+      def nothing_killed?
+        killed_count.zero? && timeout_count.zero? && scored_mutant_count >= NOTHING_KILLED_MIN_MUTANTS
+      end
+
+      def scored_mutant_count
+        killed_count + timeout_count + survived_count
       end
 
       def print_timeout_deadline

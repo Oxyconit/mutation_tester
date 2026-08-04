@@ -232,7 +232,9 @@ bundle exec mutation_test --reporters json,html --output-dir build/mutation \
   file, unknown reporter, source with a syntax error).
 - `2` - a usage error (conflicting flags; see the batch sections below).
 - `3` - the run aborted or degraded before reaching a verdict: the shadow workspace
-  was unreliable, or every mutant ended as `error`/`stillborn` so nothing was scored.
+  was unreliable (the unmutated source failed there, or the workspace copy of the
+  source turned out not to be the code the tests execute), or every mutant ended as
+  `error`/`stillborn` so nothing was scored.
   This signals an infrastructure or runner problem, not a test-quality gap, so CI
   hooks can distinguish it from a genuine threshold failure.
 - `130` - interrupted with Ctrl+C.
@@ -523,7 +525,16 @@ invalid value (less than 1, or non-numeric) falls back to 1 with a warning on st
 In parallel mode each mutant runs in an isolated shadow workspace. Every `.rb`
 file is a physical copy (non-Ruby files stay symlinks for speed), so mutations
 apply correctly even when a spec loads the source indirectly (e.g. via
-`spec_helper`). The parallel mutation score therefore matches serial.
+`spec_helper`), and `$LOAD_PATH` entries pointing into the project resolve
+inside the workspace, so a test file that reaches its source through
+`require "test_helper"` gets the mutated copy too. The parallel mutation score
+therefore matches serial.
+
+Before the first mutant, the run proves this in the workspace itself: the
+unmutated source must pass there, and the same suite must fail once that copy of
+the source is replaced by a `raise`. A run whose tests pass even then is aborted
+as an infrastructure failure (exit code `3`) rather than reported as a 0.0%
+score, because the mutated file is demonstrably not the code being executed.
 
 ### When to use serial vs parallel execution
 

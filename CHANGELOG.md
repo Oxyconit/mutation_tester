@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.1] - 2026-08-03
+
+- Fixed parallel runs reporting every mutant as survived (`Killed: 0`, score `0.0%`) on projects whose test file reaches its source through `$LOAD_PATH` (a Rails app run with `-Itest` in `RUBYOPT`, for example). A preloaded worker is started once in the real project root, so Ruby absolutizes every `-I`/`RUBYLIB` entry against that directory; the forked child then changed into the shadow workspace but kept resolving `require "test_helper"` back to the original tree, which loaded the unmutated source. Each job now rewrites the `$LOAD_PATH` entries of the mirrored project root into the workspace, so a preloaded worker resolves project code exactly like the `spawn` runner that starts inside the workspace. Only Minitest suites hit this in practice: RSpec re-adds `lib` and its default path at run time, after the child has changed directory. Serial runs and the `spawn` runner were never affected, which is why the same file scored 96.55% serially and 0.0% with `-p 8`.
+- The shadow-workspace sanity check now also proves that the workspace copy of the source is the code the tests execute: after the unmutated source passes there, the check replaces that copy with a `raise` and requires the run to fail. When it still passes, the run aborts as an infrastructure failure (exit code `3`) naming the likely causes, instead of reporting a complete-looking 0.0% score in which every mutant falsely survived.
+- The console summary now warns when a file with at least five scored mutants killed none of them, pointing at the runner rather than at test quality and suggesting a `--runner spawn` comparison.
+
 ## [1.4.0] - 2026-08-01
 
 - Minitest suites now use the same execution runners as RSpec instead of being pinned to `spawn`. The fork worker preloads `minitest` (disabling the `minitest/autorun` at-exit hook and driving `Minitest.run` itself, so the file still runs exactly once per mutant) and the in-memory runner preloads the test file once and re-evaluates each mutant in a fresh fork, so a Minitest project no longer pays a full interpreter, Bundler and framework boot per mutant. Preloaded workers are now keyed by framework, so a mixed-framework `--glob` run never hands a Minitest file to an RSpec-preloaded worker.

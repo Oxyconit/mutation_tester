@@ -877,6 +877,67 @@ RSpec.describe 'Integration' do
     expect(parallel.values).to include(true)
   end
 
+  it 'produces an identical killed/survived set in parallel and serial when the test file resolves the source through $LOAD_PATH' do
+    test_dir = File.join(project_dir, 'test')
+    FileUtils.mkdir_p(test_dir)
+
+    File.write(File.join(lib_dir, 'thing.rb'), <<~RUBY)
+      class Thing
+        def add(a, b)
+          a + b
+        end
+
+        def unused(a)
+          a + 1
+        end
+      end
+    RUBY
+
+    File.write(File.join(test_dir, 'thing_test.rb'), <<~RUBY)
+      require 'minitest/autorun'
+      require 'thing'
+
+      class ThingTest < Minitest::Test
+        def test_add
+          assert_equal 3, Thing.new.add(1, 2)
+        end
+      end
+    RUBY
+
+    require 'mutation_tester'
+
+    source_file = File.join(lib_dir, 'thing.rb')
+    test_file = File.join(test_dir, 'thing_test.rb')
+    original = File.read(source_file)
+
+    ast = Parser::CurrentRuby.parse(original)
+    mutations = MutationTester::Mutator.new(source_file, MutationTester::Configuration.new).generate_mutations(ast)
+    expect(mutations).not_to be_empty
+
+    run_in_mode = lambda do |processes|
+      MutationTester::ForkRunner.shutdown_all
+      config = MutationTester::Configuration.new
+      config.runner = :fork
+      config.parallel_processes = processes
+      runner = MutationTester::MutationRunner.new(source_file, test_file, original, config)
+      previous = ENV['RUBYOPT']
+      ENV['RUBYOPT'] = [previous, '-Ilib'].compact.join(' ')
+      begin
+        results = Dir.chdir(project_dir) { runner.run(mutations) }
+        results.to_h { |r| [r[:id], r[:killed]] }
+      ensure
+        ENV['RUBYOPT'] = previous
+        MutationTester::ForkRunner.shutdown_all
+      end
+    end
+
+    serial = run_in_mode.call(1)
+    parallel = run_in_mode.call(2)
+
+    expect(parallel).to eq(serial)
+    expect(parallel.values).to include(true)
+  end
+
   describe 'guaranteed mutant timeout without the external `timeout` binary' do
     around do |example|
       TimeoutBinaryEnv.without_timeout_binary { example.run }
@@ -1205,7 +1266,7 @@ RSpec.describe 'MutationTester::Core shadow baseline sanity check' do
   def count_shadow_checks
     calls = 0
     allow_any_instance_of(MutationTester::MutationRunner)
-      .to receive(:shadow_baseline_passes?).and_wrap_original do |original, *args|
+      .to receive(:shadow_workspace_check).and_wrap_original do |original, *args|
       calls += 1
       original.call(*args)
     end
@@ -1321,6 +1382,29 @@ RSpec.describe 'MutationTester::Core shadow baseline sanity check' do
       expect(core.results).to be_empty
       expect(output).to match(/shadow/i)
       expect(output).to match(/unreliable/i)
+      expect(core.infrastructure_failure?).to be(true)
+    end
+  end
+
+  it 'aborts as an infrastructure failure when the workspace copy of the source is not what the specs execute' do
+    Dir.mktmpdir do |dir|
+      source, spec = write_covered_project(dir)
+      File.write(spec, File.read(spec).sub(%r{require_relative '\.\./lib/calculator'}, "require #{source.inspect}"))
+      require 'mutation_tester'
+
+      config = MutationTester::Configuration.new
+      config.runner = :fork
+      config.parallel_processes = 2
+      config.output_dir = 'mutation_reports'
+      config.verbose = false
+
+      core = MutationTester::Core.new(source, spec, config)
+      returned = nil
+      output = capture_stdout { returned = Dir.chdir(dir) { core.run } }
+
+      expect(returned).to be(false)
+      expect(core.results).to be_empty
+      expect(output).to match(/replaced by a raise/i)
       expect(core.infrastructure_failure?).to be(true)
     end
   end

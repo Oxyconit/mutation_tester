@@ -230,6 +230,31 @@ RSpec.describe MutationTester::MutationRunner do
       expect(build_runner.shadow_baseline_passes?).to be(true)
     end
 
+    it 'reports :ok when the workspace copy of the source is what the specs execute' do
+      File.write(spec_file, <<~RUBY)
+        require_relative '../lib/calc'
+
+        RSpec.describe Calc do
+          it('adds') { expect(Calc.new.add(1, 2)).to eq(3) }
+        end
+      RUBY
+
+      expect(build_runner.shadow_workspace_check).to eq(:ok)
+    end
+
+    it 'reports :canary when the specs load the source from outside the workspace' do
+      File.write(spec_file, <<~RUBY)
+        require #{source_file.inspect}
+
+        RSpec.describe Calc do
+          it('adds') { expect(Calc.new.add(1, 2)).to eq(3) }
+        end
+      RUBY
+
+      expect(build_runner.shadow_workspace_check).to eq(:canary)
+      expect(build_runner.shadow_baseline_passes?).to be(false)
+    end
+
     it 'returns false when the pristine suite fails only in shadow (excluded-dir dependency)' do
       FileUtils.mkdir_p(File.join(project_root, 'tmp'))
       File.write(File.join(project_root, 'tmp', 'helper.rb'), "SHADOW_HELPER_OK = true\n")

@@ -4,6 +4,7 @@ require 'securerandom'
 
 module MutationTester
   class MutationRunner
+    CANARY_SOURCE = "raise 'mutation_tester canary: the workspace copy of this source was not executed'\n".freeze
     PARALLEL_INTERRUPT_LINE = "Parallel execution interrupted, exiting ...\n"
 
     class ParallelInterruptFilter
@@ -216,7 +217,7 @@ module MutationTester
         File.write(shadow_source, mutation[:code])
 
         outcome, phase = run_two_phase(mutation) do |example_filters|
-          run_specs_in_shadow(shadow_spec, shadow_root, example_filters: example_filters)
+          run_specs_in_shadow(shadow_spec, shadow_root, project_root, example_filters: example_filters)
         end
         apply_outcome(result, outcome, phase)
       ensure
@@ -240,6 +241,10 @@ module MutationTester
     end
 
     def shadow_baseline_passes?
+      shadow_workspace_check == :ok
+    end
+
+    def shadow_workspace_check
       project_root = find_project_root
 
       Dir.mktmpdir do |temp_dir|
@@ -254,12 +259,16 @@ module MutationTester
 
         File.unlink(shadow_source)
         File.write(shadow_source, @original_content)
+        return :baseline unless run_specs_in_shadow(shadow_spec, shadow_root, project_root).passed?
 
-        run_specs_in_shadow(shadow_spec, shadow_root).passed?
+        File.write(shadow_source, CANARY_SOURCE)
+        return :canary if run_specs_in_shadow(shadow_spec, shadow_root, project_root).passed?
+
+        :ok
       end
     rescue => e
       warn("[MutationTester] Shadow sanity check could not prepare the shadow workspace: #{e.message}")
-      false
+      :baseline
     end
 
     def shadow_copy_project(source, dest)
@@ -284,8 +293,9 @@ module MutationTester
       end
     end
 
-    def run_specs_in_shadow(spec_file, working_dir, example_filters: [])
-      test_command(spec_file, example_filters: example_filters).run(timeout: @config.effective_timeout, chdir: working_dir)
+    def run_specs_in_shadow(spec_file, working_dir, project_root, example_filters: [])
+      test_command(spec_file, example_filters: example_filters)
+        .run(timeout: @config.effective_timeout, chdir: working_dir, mirror_of: project_root)
     end
 
     def discoverable_project_root

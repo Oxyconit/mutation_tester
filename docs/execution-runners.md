@@ -110,6 +110,15 @@ can cross the per-mutant deadline and be reported as a `timeout` instead of a
   `spawn`, even when `--runner fork` is requested.
 - If the helper process fails to preload the environment, the run warns once
   and falls back to `spawn`.
+- The helper process is started once in the real project root, so Ruby has
+  already absolutized every `-I` / `RUBYLIB` entry against that directory before
+  any mutant runs. Changing directory into a shadow workspace cannot undo that,
+  so each job additionally rewrites the `$LOAD_PATH` entries that point into the
+  mirrored project root so they point into the workspace. Without it a Minitest
+  file reaching its source through `require "test_helper"` would load the
+  original, unmutated tree and every mutant would falsely survive. RSpec re-adds
+  `lib` and its default path at run time, after the child has changed directory,
+  so it resolves the workspace copy either way.
 
 ### Limitations of the in-memory runner
 
