@@ -40,7 +40,7 @@ module MutationTester
       cmd
     end
 
-    def run(timeout: nil, chdir: nil, capture: false)
+    def run(timeout: nil, chdir: nil, capture: false, mirror_of: nil)
       if fork_execution?
         fork_runner = ForkRunner.acquire(use_bundle_exec: @use_bundle_exec, framework: @framework)
         if fork_runner
@@ -50,7 +50,8 @@ module MutationTester
             chdir: chdir || Dir.pwd,
             capture: capture,
             args: filter_args,
-            stop_on_first_failure: @stop_on_first_failure
+            stop_on_first_failure: @stop_on_first_failure,
+            mirror_of: mirror_of
           )
         end
       end

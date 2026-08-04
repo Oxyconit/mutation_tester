@@ -132,13 +132,25 @@ module MutationTester
       return true if mutation_runner.in_memory_first?
 
       puts Rainbow("\n🩺 Verifying the shadow workspace with the unmutated source...").yellow
-      if mutation_runner.shadow_baseline_passes?
-        puts Rainbow('✓ Shadow workspace verified with the unmutated source').green
-        return true
+      case mutation_runner.shadow_workspace_check
+      when :ok
+        puts Rainbow('✓ Shadow workspace verified: the unmutated source passes and the workspace copy is what the tests execute').green
+        true
+      when :canary
+        report_unreachable_workspace_source
+      else
+        puts Rainbow('❌ The unmutated source fails inside the shadow workspace; the shadow environment is unreliable.').red
+        puts Rainbow('   Every mutant would falsely die there, so the run is aborted instead of reporting a misleading score.').red
+        false
       end
+    end
 
-      puts Rainbow('❌ The unmutated source fails inside the shadow workspace; the shadow environment is unreliable.').red
-      puts Rainbow('   Every mutant would falsely die there, so the run is aborted instead of reporting a misleading score.').red
+    def report_unreachable_workspace_source
+      puts Rainbow('❌ The tests still pass with the workspace copy of the source replaced by a raise.').red
+      puts Rainbow('   The mutated file is therefore not the code the tests execute, so every mutant would falsely').red
+      puts Rainbow('   survive; the run is aborted instead of reporting a misleading 0.0% score.').red
+      puts Rainbow('   Usual causes: the tests resolve this source outside the workspace (an absolute entry in').red
+      puts Rainbow('   $LOAD_PATH, a symlinked .rb file, a preloaded copy of the class), or they never load it at all.').red
       false
     end
 

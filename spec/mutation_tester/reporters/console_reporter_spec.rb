@@ -32,6 +32,38 @@ RSpec.describe MutationTester::Reporters::ConsoleReporter do
       expect(output).to include('Location: lib/foo.rb:20')
     end
 
+    context 'when a whole file kills nothing' do
+      def survivors(count)
+        Array.new(count) { |i| { id: i + 1, status: :survived, line: i + 1, type: :boolean, description: 'd' } }
+      end
+
+      it 'warns that a run killing nothing is usually a runner problem' do
+        output = capture_stdout do
+          described_class.new(survivors(5), 'lib/foo.rb', 'spec/foo_spec.rb', config).generate
+        end
+
+        expect(output).to include('Not one of the 5 scored mutants was killed')
+        expect(output).to include('--runner spawn')
+      end
+
+      it 'stays quiet for a file too small for the zero-kill signal to mean anything' do
+        output = capture_stdout do
+          described_class.new(survivors(4), 'lib/foo.rb', 'spec/foo_spec.rb', config).generate
+        end
+
+        expect(output).not_to include('scored mutants was killed')
+      end
+
+      it 'stays quiet once at least one mutant died' do
+        results = survivors(5) + [{ id: 6, status: :killed, line: 6, type: :boolean, description: 'd' }]
+        output = capture_stdout do
+          described_class.new(results, 'lib/foo.rb', 'spec/foo_spec.rb', config).generate
+        end
+
+        expect(output).not_to include('scored mutants was killed')
+      end
+    end
+
     context 'when all mutations are killed' do
       let(:results) do
         [{ id: 1, killed: true, line: 10, type: :arithmetic, description: 'Change + to -' }]

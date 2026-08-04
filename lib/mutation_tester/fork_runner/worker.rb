@@ -26,6 +26,26 @@ end
 
 monotonic = lambda { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
 
+resolved_path = lambda do |path|
+  File.realpath(path)
+rescue SystemCallError
+  path
+end
+
+mirror_load_path = lambda do |from, to|
+  next if from.nil? || to.nil? || from == to
+
+  roots = [from, resolved_path.call(from)].uniq.map { |root| root.chomp('/') }
+  $LOAD_PATH.map! do |entry|
+    path = File.expand_path(entry.to_s, from)
+    root = roots.find { |candidate| path == candidate || path.start_with?("#{candidate}/") }
+    next entry unless root
+
+    suffix = path.delete_prefix(root).delete_prefix('/')
+    suffix.empty? ? to : File.join(to, suffix)
+  end
+end
+
 current_child = nil
 preloaded = nil
 
@@ -50,6 +70,7 @@ supervise_child = lambda do |job, out, child_body|
     rescue Errno::EACCES, Errno::EPERM
     end
     Dir.chdir(job['chdir']) if job['chdir']
+    mirror_load_path.call(job['mirror_of'], job['chdir'])
     sink = File.open(job['log'] || File::NULL, 'w')
     sink.sync = true
     STDOUT.reopen(sink)

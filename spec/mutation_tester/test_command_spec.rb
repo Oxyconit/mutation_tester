@@ -160,7 +160,8 @@ RSpec.describe MutationTester::TestCommand do
       allow(MutationTester::ForkRunner).to receive(:acquire)
         .with(use_bundle_exec: false, framework: :rspec).and_return(fork_runner)
       expect(fork_runner).to receive(:execute)
-        .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: [], stop_on_first_failure: false)
+        .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: [], stop_on_first_failure: false,
+              mirror_of: nil)
         .and_return(result)
 
       cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, runner: :fork)
@@ -174,7 +175,8 @@ RSpec.describe MutationTester::TestCommand do
       allow(MutationTester::ForkRunner).to receive(:acquire)
         .with(use_bundle_exec: false, framework: :rspec).and_return(fork_runner)
       expect(fork_runner).to receive(:execute)
-        .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: ['-e', '#foo'], stop_on_first_failure: false)
+        .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: ['-e', '#foo'],
+              stop_on_first_failure: false, mirror_of: nil)
         .and_return(result)
 
       cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, runner: :fork, example_filters: ['#foo'])
