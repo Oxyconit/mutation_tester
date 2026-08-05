@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    mutation_tester (1.4.1)
+    mutation_tester (1.4.2)
       parallel (~> 1.20)
       parser (~> 3.3)
       rainbow (~> 3.0)

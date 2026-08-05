@@ -7,8 +7,11 @@ require 'stringio'
 RSpec.describe MutationTester::BatchRunner do
   let(:config) { MutationTester::Configuration.new }
 
-  def build_runner(spec_template: nil, changed_files: nil)
-    described_class.new(glob: 'lib/**/*.rb', spec_template: spec_template, config: config, changed_files: changed_files)
+  def build_runner(spec_template: nil, spec_map: nil, changed_files: nil)
+    described_class.new(
+      glob: 'lib/**/*.rb', spec_template: spec_template, spec_map: spec_map,
+      config: config, changed_files: changed_files
+    )
   end
 
   def list_runner(files, spec_template: nil)
@@ -189,6 +192,70 @@ RSpec.describe MutationTester::BatchRunner do
     end
   end
 
+  describe 'source->spec mapping through regex rules' do
+    def rails_rule
+      described_class.parse_spec_map('\A((?:packs/[^/]+/)?)app/(.+)\.rb\z=>\1test/\2_test.rb')
+    end
+
+    it 'substitutes inside the path, so a pack keeps its prefix and only its app segment changes' do
+      runner = build_runner(spec_map: [rails_rule])
+
+      expect(runner.send(:spec_path_for, 'app/models/current.rb')).to eq('test/models/current_test.rb')
+      expect(runner.send(:spec_path_for, 'packs/identity/app/models/party.rb'))
+        .to eq('packs/identity/test/models/party_test.rb')
+      expect(runner.send(:spec_path_for, 'packs/billing/app/jobs/send_job.rb'))
+        .to eq('packs/billing/test/jobs/send_job_test.rb')
+    end
+
+    it 'normalizes a leading ./ before matching so an explicit relative path maps the same way' do
+      runner = build_runner(spec_map: [rails_rule])
+
+      expect(runner.send(:spec_path_for, './app/models/current.rb')).to eq('test/models/current_test.rb')
+    end
+
+    it 'applies the first matching rule and ignores later ones' do
+      runner = build_runner(spec_map: [
+        described_class.parse_spec_map('\Aapp/(.+)\.rb\z=>test/\1_test.rb'),
+        described_class.parse_spec_map('\Aapp/(.+)\.rb\z=>never/\1_test.rb')
+      ])
+
+      expect(runner.send(:spec_path_for, 'app/models/user.rb')).to eq('test/models/user_test.rb')
+    end
+
+    it 'falls back to the template for a source no rule matches, so one flag can cover only part of a tree' do
+      runner = build_runner(
+        spec_template: 'test/{name}_test.rb',
+        spec_map: [described_class.parse_spec_map('\Aapp/(.+)\.rb\z=>test/\1_test.rb')]
+      )
+
+      expect(runner.send(:spec_path_for, 'app/models/user.rb')).to eq('test/models/user_test.rb')
+      expect(runner.send(:spec_path_for, 'lib/parser.rb')).to eq('test/parser_test.rb')
+    end
+  end
+
+  describe '.parse_spec_map' do
+    it 'splits on the first separator, so a replacement may contain one too' do
+      pattern, replacement = described_class.parse_spec_map('\Aapp/=>test/=>x/')
+      expect(pattern).to eq(/\Aapp\//)
+      expect(replacement).to eq('test/=>x/')
+    end
+
+    it 'rejects a rule without a separator, naming the expected form' do
+      expect { described_class.parse_spec_map('app/test/') }
+        .to raise_error(MutationTester::Error, /has no => separator/)
+    end
+
+    it 'rejects an empty pattern instead of building a rule that matches everything' do
+      expect { described_class.parse_spec_map('=>test/') }
+        .to raise_error(MutationTester::Error, /empty pattern/)
+    end
+
+    it 'reports an unparseable pattern as a usable error rather than a raw RegexpError' do
+      expect { described_class.parse_spec_map('app/(=>test/') }
+        .to raise_error(MutationTester::Error, /is not a valid regular expression/)
+    end
+  end
+
   describe 'per-file report subdirectory' do
     it 'nests a flat, collision-free slug directly under the base output_dir' do
       config.output_dir = 'tmp/mutation_reports'
@@ -323,6 +390,26 @@ RSpec.describe MutationTester::BatchRunner do
     it 'reports matched_any? false only when nothing was matched at all' do
       expect(described_class.new(processed: [], skipped: []).matched_any?).to be false
       expect(described_class.new(processed: [processed(true)], skipped: []).matched_any?).to be true
+    end
+
+    it 'fails the gate when files were matched but none was measured, so a broken mapping cannot pass silently' do
+      result = described_class.new(processed: [], skipped: [skipped])
+
+      expect(result.nothing_measured?).to be true
+      expect(result.gate_passed?).to be false
+    end
+
+    it 'fails the gate when nothing was matched at all' do
+      expect(described_class.new(processed: [], skipped: []).gate_passed?).to be false
+    end
+
+    it 'passes the gate when every measured file met the threshold, skipped files aside' do
+      expect(described_class.new(processed: [processed(true)], skipped: [skipped]).gate_passed?).to be true
+      expect(described_class.new(processed: [processed(true), processed(false)], skipped: []).gate_passed?).to be false
+    end
+
+    it 'passes the gate when every match was unchanged, so a run with nothing to mutate stays green' do
+      expect(described_class.new(processed: [], skipped: [], unchanged: ['lib/z.rb']).gate_passed?).to be true
     end
 
     it 'treats a run where every match was unchanged as matched and successful' do

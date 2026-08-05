@@ -60,6 +60,14 @@ OptionParser.new do |opts|
     options[:spec_glob] = template
   end
 
+  opts.on('--spec-map RULE', "Regex spec-mapping rule 'PATTERN#{MutationTester::BatchRunner::SPEC_MAP_SEPARATOR}REPLACEMENT' applied to the whole source path to build the whole spec path (e.g. '\\A((?:packs/[^/]+/)?)app/(.+)\\.rb\\z#{MutationTester::BatchRunner::SPEC_MAP_SEPARATOR}\\1test/\\2_test.rb'). Repeatable; the first matching rule wins and a source matching no rule falls back to --spec-glob. Requires a FILE list, --staged, or --glob.") do |rule|
+    (options[:spec_map] ||= []) << rule
+  end
+
+  opts.on('--minimum-score N', Float, "Mutation score percentage a file must reach to pass (default: #{MutationTester::Configuration::DEFAULT_MINIMUM_SCORE})") do |score|
+    options[:minimum_score] = score
+  end
+
   opts.on('--since REV', 'Incremental batch mode: mutate only the files matched by --glob that changed since git revision REV (new files count as changed). Requires --glob.') do |rev|
     options[:since] = rev
   end
@@ -150,6 +158,13 @@ end
 glob_mode = !options[:glob].nil?
 staged_mode = options.fetch(:staged, false)
 
+spec_map = begin
+  (options[:spec_map] || []).map { |rule| MutationTester::BatchRunner.parse_spec_map(rule) }
+rescue MutationTester::Error => e
+  usage_error.call(e.message,
+                   "Quote the rule so the shell keeps it intact, e.g. --spec-map '\\Aapp/(.+)\\.rb\\z=>test/\\1_test.rb'.")
+end
+
 apply_configuration = lambda do
   MutationTester.configure do |config|
     config.parallel_processes = options[:parallel] if options[:parallel]
@@ -158,6 +173,7 @@ apply_configuration = lambda do
     config.show_progress = !options[:no_progress]
     config.reporters = selected_reporters if selected_reporters
     config.output_dir = options[:output_dir] if options[:output_dir]
+    config.minimum_score = options[:minimum_score] if options[:minimum_score]
     config.test_selection = false if options[:no_test_selection]
     config.timeout_factor = options[:timeout_factor] if options[:timeout_factor]
     config.timeout_policy = options[:timeout_policy] if options[:timeout_policy]
@@ -224,18 +240,17 @@ if glob_mode
   batch = MutationTester::BatchRunner.new(
     glob: options[:glob],
     spec_template: options[:spec_glob],
+    spec_map: spec_map,
     config: MutationTester.configuration,
     since: options[:since],
     changed_files: changed_files
   )
 
-  run_batch_machine.call(batch, ->(result) { result.matched_any? && result.success? }) if json_mode
+  run_batch_machine.call(batch, ->(result) { result.gate_passed? }) if json_mode
 
   result = guard_interrupt.call { batch.run }
 
-  exit 1 unless result.matched_any?
-
-  exit(result.success? ? 0 : 1)
+  exit(result.gate_passed? ? 0 : 1)
 end
 
 if !staged_mode && ARGV.empty?
@@ -253,6 +268,11 @@ legacy_pair = !staged_mode && ARGV.length == 2 && MutationTester::BatchRunner.te
 if options[:spec_glob] && legacy_pair
   usage_error.call('--spec-glob does not apply to an explicit SOURCE_FILE TEST_FILE pair.',
                    'Use --spec-glob with a positional FILE list, --staged, or --glob.')
+end
+
+if options[:spec_map] && legacy_pair
+  usage_error.call('--spec-map does not apply to an explicit SOURCE_FILE TEST_FILE pair.',
+                   'Use --spec-map with a positional FILE list, --staged, or --glob.')
 end
 
 if legacy_pair
@@ -278,7 +298,7 @@ else
   single_file_json = json_mode && !staged_mode && sources.length == 1
 
   if single_file_json
-    outcome = MutationTester::BatchRunner.new(files: sources, spec_template: options[:spec_glob]).classify(sources.first)
+    outcome = MutationTester::BatchRunner.new(files: sources, spec_template: options[:spec_glob], spec_map: spec_map).classify(sources.first)
     if outcome.is_a?(MutationTester::BatchRunner::SkippedEntry)
       reason = MutationTester::BatchRunner::SKIP_REASONS.fetch(outcome.reason)
       detail = outcome.expected_spec ? " (expected #{outcome.expected_spec})" : ''
@@ -293,14 +313,15 @@ else
     batch = MutationTester::BatchRunner.new(
       files: sources,
       spec_template: options[:spec_glob],
+      spec_map: spec_map,
       config: MutationTester.configuration
     )
 
-    run_batch_machine.call(batch, ->(result) { result.processed.any? && result.success? }) if json_mode
+    run_batch_machine.call(batch, ->(result) { result.gate_passed? }) if json_mode
 
     result = guard_interrupt.call { batch.run }
 
-    exit(result.processed.any? && result.success? ? 0 : 1)
+    exit(result.gate_passed? ? 0 : 1)
   end
 end
 

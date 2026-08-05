@@ -9,6 +9,8 @@ module MutationTester
 
     DEFAULT_SPEC_TEMPLATE = 'spec/{name}_spec.rb'.freeze
 
+    SPEC_MAP_SEPARATOR = '=>'.freeze
+
     TEST_FILE_SUFFIXES = ['_spec.rb', '.spec.rb', '_test.rb'].freeze
 
     SKIP_REASONS = {
@@ -57,6 +59,18 @@ module MutationTester
         !(processed.empty? && skipped.empty? && (unchanged || []).empty?)
       end
 
+      def nothing_measured?
+        processed.empty? && !skipped.empty?
+      end
+
+      def gate_passed?
+        return false unless matched_any?
+        return false if nothing_measured?
+        return true if processed.empty?
+
+        success?
+      end
+
       def interrupted?
         !!interrupted
       end
@@ -100,6 +114,24 @@ module MutationTester
             .map { |path| Pathname.new(File.expand_path(path, toplevel)).relative_path_from(base).to_s }
     end
 
+    def self.parse_spec_map(rule)
+      pattern, replacement = rule.to_s.split(SPEC_MAP_SEPARATOR, 2)
+      if replacement.nil?
+        raise MutationTester::Error,
+              "--spec-map #{rule.to_s.inspect} has no #{SPEC_MAP_SEPARATOR} separator; " \
+              "write it as 'PATTERN#{SPEC_MAP_SEPARATOR}REPLACEMENT'"
+      end
+      if pattern.empty?
+        raise MutationTester::Error, "--spec-map #{rule.to_s.inspect} has an empty pattern"
+      end
+
+      begin
+        [Regexp.new(pattern), replacement]
+      rescue RegexpError => e
+        raise MutationTester::Error, "--spec-map pattern #{pattern.inspect} is not a valid regular expression: #{e.message}"
+      end
+    end
+
     def self.test_file?(path)
       basename = File.basename(path)
       return true if TEST_FILE_SUFFIXES.any? { |suffix| basename.end_with?(suffix) }
@@ -118,12 +150,13 @@ module MutationTester
     end
     private_class_method :git_capture
 
-    def initialize(glob: nil, files: nil, spec_template: nil, config: MutationTester.configuration, since: nil, changed_files: nil)
+    def initialize(glob: nil, files: nil, spec_template: nil, spec_map: nil, config: MutationTester.configuration, since: nil, changed_files: nil)
       raise ArgumentError, 'provide exactly one of glob: or files:' unless glob.nil? ^ files.nil?
 
       @glob = glob
       @files = files
       @spec_template = spec_template.nil? || spec_template.empty? ? DEFAULT_SPEC_TEMPLATE : spec_template
+      @spec_map = spec_map || []
       @config = config
       @since = since
       @changed_files = changed_files
@@ -203,6 +236,10 @@ module MutationTester
     end
 
     def spec_path_for(source_file)
+      normalized = source_file.sub(%r{\A\./}, '')
+      pattern, replacement = @spec_map.find { |rule_pattern, _| rule_pattern.match?(normalized) }
+      return normalized.sub(pattern, replacement) if pattern
+
       @spec_template.gsub(NAME_PLACEHOLDER, source_name(source_file))
     end
 
@@ -254,8 +291,9 @@ module MutationTester
       puts Rainbow('=' * 80).bright
       failed = result.processed.reject(&:passed?)
       degraded = failed.select(&:degraded?)
-      if @files && result.processed.empty?
-        puts Rainbow('❌ No files were mutation-tested: every listed file was skipped').red
+      if result.nothing_measured?
+        scope = @files ? 'listed' : 'matched'
+        puts Rainbow("❌ No files were mutation-tested: every #{scope} file was skipped").red
       elsif result.success?
         puts Rainbow('✓ All processed files met the mutation score threshold').green
       elsif degraded.size == failed.size

@@ -29,7 +29,8 @@ The same thing, condensed to a copy-pasteable minimal workflow. It matches the
 maintained template above; reach for the template when you want the parallel and
 multi-file variants. The quality gate needs no extra configuration: the CLI exits
 non-zero when the mutation score is below the threshold, which fails the step (and
-the job).
+the job). The threshold defaults to 80 and `--minimum-score N` sets it for a
+single run, so an existing codebase can start lower and ratchet the number up.
 
 ```yaml
 name: Mutation Testing
@@ -107,6 +108,28 @@ jobs:
 
 A PR that touches nothing under `lib/` exits `0` with a "Nothing to mutate"
 message, so the gate never blocks unrelated changes.
+
+### What the batch exit code guarantees
+
+A batch run exits `0` only when at least one file was actually mutation-tested
+and every processed file met the threshold, or when the `--since` filter left
+nothing to mutate. If the glob matched files but *every* one of them was skipped
+(most often `no matching spec file`), the run exits `1`: nothing was measured, so
+the gate has nothing to vouch for. That keeps a typo in `--spec-glob` /
+`--spec-map`, or a refactor that moves the test directory, from silently turning
+a green job into a job that measures nothing.
+
+For an application whose tests do not sit under `spec/`, map the paths with
+`--spec-map` (see
+[Mapping sources to specs](../readme.md#mapping-sources-to-specs)):
+
+```yaml
+      - name: Run mutation tests on changed files only
+        run: |
+          bundle exec mutation_test --glob '{app,packs/*/app}/**/*.rb' \
+            --spec-map '\A((?:packs/[^/]+/)?)app/(.+)\.rb\z=>\1test/\2_test.rb' \
+            --since "origin/${{ github.base_ref }}" --fail-fast
+```
 
 ## Machine mode as a CI gate and artifact
 
