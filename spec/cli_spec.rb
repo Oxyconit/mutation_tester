@@ -538,12 +538,177 @@ RSpec.describe 'exe/mutation_test batch mode' do
         expect(output).to match(/SKIPPED \(no matching spec file\):/)
         expect(output).to match(/lib\/lonely\.rb \(expected spec\/lonely_spec\.rb\)/)
         expect(output).to match(/Batch summary: 0 processed, 1 skipped/)
+        expect(status).to eq(1)
+      end
+    end
+  end
+
+  describe 'a batch that matched files but measured none' do
+    it 'fails instead of reporting success, so a mapping that resolves to nothing cannot pass the gate' do
+      Dir.mktmpdir do |dir|
+        build_project(dir)
+
+        output, status = run_batch(
+          '--glob', 'lib/**/*.rb', '--spec-glob', 'wrong/{name}_test.rb', chdir: dir
+        )
+
+        expect(status).to eq(1)
+        expect(output).to match(/Batch summary: 0 processed, 3 skipped/)
+        expect(output).to match(/No files were mutation-tested: every matched file was skipped/)
+        expect(output).not_to match(/All processed files met the mutation score threshold/)
+      end
+    end
+
+    it 'marks the JSON envelope as failed for the same run' do
+      Dir.mktmpdir do |dir|
+        build_project(dir)
+
+        stdout, _stderr, status = run_batch_split(
+          '--json', '--glob', 'lib/**/*.rb', '--spec-glob', 'wrong/{name}_test.rb', chdir: dir
+        )
+
+        expect(status).to eq(1)
+        envelope = JSON.parse(stdout)
+        expect(envelope['summary']).to include('processed' => 0, 'passed' => false)
+      end
+    end
+  end
+
+  describe '--spec-map for layouts that substitute inside the path' do
+    RAILS_SPEC_MAP = '\A((?:packs/[^/]+/)?)app/(.+)\.rb\z=>\1test/\2_test.rb'.freeze
+
+    def covered_class(name)
+      <<~RUBY
+        class #{name}
+          def add(a, b)
+            a + b
+          end
+        end
+      RUBY
+    end
+
+    def covering_test(name, require_path)
+      <<~RUBY
+        require 'minitest/autorun'
+        require_relative '#{require_path}'
+
+        class #{name}Test < Minitest::Test
+          def test_add
+            assert_equal 3, #{name}.new.add(1, 2)
+            assert_equal 0, #{name}.new.add(0, 0)
+            assert_equal(-1, #{name}.new.add(1, -2))
+            assert_equal 5, #{name}.new.add(2, 3)
+          end
+        end
+      RUBY
+    end
+
+    def build_packs_project(dir)
+      {
+        'app/models/current.rb' => covered_class('Current'),
+        'test/models/current_test.rb' => covering_test('Current', '../../app/models/current'),
+        'packs/identity/app/models/party.rb' => covered_class('Party'),
+        'packs/identity/test/models/party_test.rb' => covering_test('Party', '../../app/models/party'),
+        'lib/parser.rb' => covered_class('Parser'),
+        'test/parser_test.rb' => covering_test('Parser', '../lib/parser')
+      }.each do |path, content|
+        full = File.join(dir, path)
+        FileUtils.mkdir_p(File.dirname(full))
+        File.write(full, content)
+      end
+    end
+
+    it 'maps app/ to test/ under a variable-length prefix, which no {name} template can express' do
+      Dir.mktmpdir do |dir|
+        build_packs_project(dir)
+
+        output, status = run_batch(
+          '--glob', '{app,packs/*/app}/**/*.rb', '--spec-map', RAILS_SPEC_MAP, chdir: dir
+        )
+
         expect(status).to eq(0)
+        expect(output).to match(%r{Spec:\s+test/models/current_test\.rb})
+        expect(output).to match(%r{Spec:\s+packs/identity/test/models/party_test\.rb})
+        expect(output).to match(/Batch summary: 2 processed, 0 skipped/)
+      end
+    end
+
+    it 'falls back to --spec-glob for a source no rule matches, so one run covers app/ and lib/ together' do
+      Dir.mktmpdir do |dir|
+        build_packs_project(dir)
+
+        output, status = run_batch(
+          '--glob', '{app,lib,packs/*/app}/**/*.rb',
+          '--spec-map', RAILS_SPEC_MAP,
+          '--spec-glob', 'test/{name}_test.rb',
+          chdir: dir
+        )
+
+        expect(status).to eq(0)
+        expect(output).to match(%r{Spec:\s+test/parser_test\.rb})
+        expect(output).to match(/Batch summary: 3 processed, 0 skipped/)
+      end
+    end
+
+    it 'maps a positional FILE list the same way as a glob batch' do
+      Dir.mktmpdir do |dir|
+        build_packs_project(dir)
+
+        output, status = run_batch(
+          '--spec-map', RAILS_SPEC_MAP, 'packs/identity/app/models/party.rb', chdir: dir
+        )
+
+        expect(status).to eq(0)
+        expect(output).to match(%r{Spec:\s+packs/identity/test/models/party_test\.rb})
+      end
+    end
+  end
+
+  describe '--minimum-score' do
+    it 'moves the pass/fail threshold the exit code is gated on' do
+      Dir.mktmpdir do |dir|
+        build_project(dir)
+
+        default_output, default_status = run_batch(
+          '--glob', 'lib/calc.rb', '--spec-glob', 'test/{name}_test.rb', chdir: dir
+        )
+        expect(default_status).to eq(1)
+        expect(default_output).to match(/FAIL\s+50\.00%\s+lib\/calc\.rb/)
+
+        lowered_output, lowered_status = run_batch(
+          '--glob', 'lib/calc.rb', '--spec-glob', 'test/{name}_test.rb',
+          '--minimum-score', '40', chdir: dir
+        )
+        expect(lowered_status).to eq(0)
+        expect(lowered_output).to match(/PASS\s+50\.00%\s+lib\/calc\.rb/)
       end
     end
   end
 
   describe 'usage errors' do
+    it 'rejects --spec-map combined with an explicit SOURCE TEST pair on stderr with a usage status' do
+      Dir.mktmpdir do |dir|
+        stdout, stderr, status = run_batch_split(
+          '--spec-map', '\Aapp/(.+)\.rb\z=>test/\1_test.rb', 'a.rb', 'b_test.rb', chdir: dir
+        )
+        expect(status).to eq(2)
+        expect(stdout).to eq('')
+        expect(stderr).to match(/--spec-map does not apply to an explicit SOURCE_FILE TEST_FILE pair/)
+      end
+    end
+
+    it 'rejects a --spec-map rule without a separator before any mutation runs' do
+      Dir.mktmpdir do |dir|
+        build_project(dir)
+        stdout, stderr, status = run_batch_split(
+          '--glob', 'lib/**/*.rb', '--spec-map', 'app/test/', chdir: dir
+        )
+        expect(status).to eq(2)
+        expect(stdout).to eq('')
+        expect(stderr).to match(/--spec-map "app\/test\/" has no => separator/)
+      end
+    end
+
     it 'rejects --spec-glob combined with an explicit SOURCE TEST pair on stderr with a usage status' do
       Dir.mktmpdir do |dir|
         stdout, stderr, status = run_batch_split(

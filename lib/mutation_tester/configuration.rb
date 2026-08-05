@@ -5,6 +5,7 @@ module MutationTester
     RUNNER_MODES = %i[auto fork spawn in_memory].freeze
     TIMEOUT_POLICIES = %i[killed separate].freeze
     AUTO_PARALLEL_CAP = 8
+    DEFAULT_MINIMUM_SCORE = 80.0
     DEFAULT_TIMEOUT = 30
     DEFAULT_TIMEOUT_FACTOR = 5
     CALIBRATED_TIMEOUT_FLOOR = 5
@@ -56,7 +57,7 @@ module MutationTester
       }
       @reporters = %i[console html json]
       @output_dir = 'tmp/mutation_reports'
-      @minimum_score = 80.0
+      @minimum_score = DEFAULT_MINIMUM_SCORE
       @fail_on_threshold = true
       @verbose = false
       @show_file_path = true

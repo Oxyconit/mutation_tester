@@ -204,6 +204,8 @@ mutation_test [OPTIONS] --glob 'lib/**/*.rb'
 | `--staged` | Mutation-test the files staged in git (`git diff --cached --name-only`; files staged as deleted are ignored), mapping each to its spec like a positional `FILE` list. Cannot be combined with positional arguments or `--glob`. See [File lists and --staged](#file-lists-and---staged-test-what-you-changed). |
 | `--glob PATTERN` | Batch mode: mutation-test every source file matching `PATTERN`, mapping each to its spec by convention (see [Batch mode](#batch-mode-run-many-files-in-one-command)). |
 | `--spec-glob TEMPLATE` | Spec-mapping template with a `{name}` placeholder (default: `spec/{name}_spec.rb`). Requires a positional `FILE` list, `--staged`, or `--glob`. |
+| `--spec-map RULE` | Spec-mapping rule `'PATTERN=>REPLACEMENT'`: a regular expression applied to the whole source path to build the whole spec path, for layouts a `{name}` template cannot express (Rails `app/` -> `test/`, engines, Packwerk packs). Repeatable, first matching rule wins, a source matching no rule falls back to `--spec-glob`. Requires a positional `FILE` list, `--staged`, or `--glob`. See [Mapping sources to specs](#mapping-sources-to-specs). |
+| `--minimum-score N` | Mutation score percentage a file must reach to pass (default: 80). Drives the `PASS`/`FAIL` verdict and the exit code. |
 | `--since REV` | Incremental batch mode: mutate only the files matched by `--glob` that changed since git revision `REV` (new files count as changed). Requires `--glob`. See [Incremental mode](#incremental-mode-mutate-only-what-changed). |
 | `--fail-fast` | Stop the run at the first surviving mutant and finish with a failing status. Works in single-file mode and with `--glob`. |
 | `--timeout-factor N` | Per-mutant timeout budget as `N` times the measured baseline test run, never below 5 s (default: 5, must be > 0). Ignored when `config.timeout` is set explicitly, which keeps a fixed budget. See [Configuration](#configuration). |
@@ -314,8 +316,8 @@ reported as `SKIPPED` with an explicit reason and never count as a success:
 - **not a Ruby source file** - e.g. a staged `.md` or config file.
 - **a test file, not a mutable source** - a test file passed directly
   (`*_spec.rb`, `*.spec.rb`, `*_test.rb`, `test_*.rb`, or minitest content).
-- **no matching spec file** - the convention (or `--spec-glob`) points at a
-  spec that does not exist; the expected path is printed.
+- **no matching spec file** - the convention (or `--spec-glob` / `--spec-map`)
+  points at a spec that does not exist; the expected path is printed.
 
 Exit codes: `0` when at least one file was processed and every processed file
 met the threshold; `1` when any processed file was below threshold or when
@@ -336,16 +338,8 @@ run, so you no longer need to script a loop around `mutation_test` or depend on
 the Rails-only `rake mutation:test_models` task.
 
 Each matched source file is mapped to its spec by convention: `lib/X.rb` becomes
-`spec/X_spec.rb`. Concretely the spec path is `spec/{name}_spec.rb` where `{name}`
-is the source path with a leading `lib/` segment removed and the `.rb` extension
-stripped, subdirectories preserved (`lib/foo/bar.rb` -> `spec/foo/bar_spec.rb`).
-
-Override the convention with `--spec-glob TEMPLATE`, a template containing the
-`{name}` placeholder. For a Minitest project laid out under `test/`:
-
-```bash
-bundle exec mutation_test --glob 'lib/**/*.rb' --spec-glob 'test/{name}_test.rb'
-```
+`spec/X_spec.rb`. See [Mapping sources to specs](#mapping-sources-to-specs) for
+the two ways to override that convention.
 
 Behaviour:
 
@@ -359,24 +353,93 @@ Behaviour:
   file with its score and `PASS`/`FAIL` against the threshold, followed by a
   clearly separated `SKIPPED` list.
 - **A source file with no matching spec is `SKIPPED`**, reported explicitly and
-  never counted as a success. A skipped file does not by itself fail the run.
+  never counted as a success. A single skipped file next to processed ones does
+  not by itself fail the run, but a run that skipped *every* matched file
+  measured nothing and fails (see the exit codes below).
 
 Exit codes:
 
-- `0` - every processed file met the mutation score threshold (including a
-  `--since` run where nothing changed, see below).
+- `0` - at least one file was mutation-tested and every processed file met the
+  mutation score threshold. A `--since` run where nothing changed also exits `0`
+  (see below).
 - `1` - at least one processed file was below threshold, the glob matched no
-  source files at all, or `--fail-fast` stopped the run at a surviving mutant.
-- `2` - a usage error: `--spec-glob` with an explicit `SOURCE_FILE TEST_FILE`
-  pair, `--since` given without `--glob`, `--staged` combined with positional
-  arguments or `--glob`, or `--since`/`--staged` used outside a git repository
-  (for `--since` also an unknown revision).
+  source files at all, every matched file was skipped so nothing was actually
+  mutation-tested, or `--fail-fast` stopped the run at a surviving mutant.
+- `2` - a usage error: `--spec-glob` or `--spec-map` with an explicit
+  `SOURCE_FILE TEST_FILE` pair, a malformed `--spec-map` rule, `--since` given
+  without `--glob`, `--staged` combined with positional arguments or `--glob`,
+  or `--since`/`--staged` used outside a git repository (for `--since` also an
+  unknown revision).
+
+The "every matched file was skipped" case is deliberate: a typo in
+`--spec-glob`/`--spec-map`, or a refactor that moves the test directory, would
+otherwise leave a green CI step that measured nothing.
 
 ```bash
 # Minitest project, JSON report per file, custom output directory
 bundle exec mutation_test --glob 'lib/**/*.rb' --spec-glob 'test/{name}_test.rb' \
   --reporters json --output-dir build/mutation
 ```
+
+### Mapping sources to specs
+
+Every mode that takes more than an explicit `SOURCE_FILE TEST_FILE` pair (a
+positional `FILE` list, `--staged`, `--glob`) derives the test path from the
+source path. Two mechanisms do that, checked in this order:
+
+1. `--spec-map 'PATTERN=>REPLACEMENT'` - regular-expression rules.
+2. `--spec-glob TEMPLATE` - a `{name}` template (default `spec/{name}_spec.rb`).
+
+**`--spec-glob TEMPLATE`** substitutes `{name}`, which is the source path with a
+leading `lib/` segment removed and the `.rb` extension stripped, subdirectories
+preserved (`lib/foo/bar.rb` -> `spec/foo/bar_spec.rb`). Because `{name}` is one
+value, a template can only add a prefix and a suffix around the source path. For
+a Minitest project laid out under `test/` that is enough:
+
+```bash
+bundle exec mutation_test --glob 'lib/**/*.rb' --spec-glob 'test/{name}_test.rb'
+```
+
+**`--spec-map 'PATTERN=>REPLACEMENT'`** covers the layouts a template cannot
+express: those that substitute *inside* the path, after a variable-length
+prefix. `PATTERN` is a Ruby regular expression matched against the whole source
+path (a leading `./` removed); the first `=>` separates it from `REPLACEMENT`,
+which may use `\1`, `\2`, ... backreferences and produces the whole spec path.
+Only the first match in the path is replaced.
+
+- The flag is repeatable and the first matching rule wins.
+- A source that matches no rule falls back to `--spec-glob` (or the default
+  convention), so one command can cover `app/` and `lib/` at once.
+- Quote the rule in single quotes so the shell leaves the backslashes alone.
+
+Rails and Rails-shaped layouts, where the rule is "replace the `app/` segment
+with `test/`, keep whatever prefix comes before it":
+
+```bash
+# Plain Rails, Minitest: app/models/current.rb -> test/models/current_test.rb
+bundle exec mutation_test --glob 'app/**/*.rb' \
+  --spec-map '\Aapp/(.+)\.rb\z=>test/\1_test.rb'
+
+# Plain Rails, RSpec: app/models/user.rb -> spec/models/user_spec.rb
+bundle exec mutation_test --glob 'app/**/*.rb' \
+  --spec-map '\Aapp/(.+)\.rb\z=>spec/\1_spec.rb'
+
+# Packwerk / packs-rails and engines, with the app root as an optional prefix:
+#   app/models/current.rb                -> test/models/current_test.rb
+#   packs/identity/app/models/party.rb   -> packs/identity/test/models/party_test.rb
+#   engines/billing/app/jobs/send_job.rb -> engines/billing/test/jobs/send_job_test.rb
+bundle exec mutation_test --glob '{app,packs/*/app,engines/*/app}/**/*.rb' \
+  --spec-map '\A((?:(?:packs|engines)/[^/]+/)?)app/(.+)\.rb\z=>\1test/\2_test.rb'
+
+# app/ through the rule, lib/ through the template, in one run
+bundle exec mutation_test --glob '{app,lib}/**/*.rb' \
+  --spec-map '\Aapp/(.+)\.rb\z=>test/\1_test.rb' \
+  --spec-glob 'test/{name}_test.rb'
+```
+
+When a rule produces a path that does not exist, the file is reported as
+`SKIPPED (no matching spec file)` with the expected path printed, and a run in
+which *every* file was skipped that way fails with exit code `1`.
 
 ### Incremental mode: mutate only what changed
 
@@ -463,7 +526,7 @@ MutationTester.configure do |config|
   # Set it explicitly to write elsewhere (this example uses "mutation_reports"):
   config.output_dir = "mutation_reports"
 
-  # Quality thresholds
+  # Quality thresholds. The CLI flag --minimum-score overrides this per run.
   config.minimum_score = 80.0
   config.fail_on_threshold = true
 
@@ -581,7 +644,8 @@ bundle exec mutation_test app/models/user.rb spec/models/user_spec.rb \
   -p 4 --worker-env TEST_ENV_NUMBER
 
 # Batch over a whole directory the same way
-bundle exec mutation_test --glob 'app/models/**/*.rb' --spec-glob 'spec/models/{name}_spec.rb' \
+bundle exec mutation_test --glob 'app/models/**/*.rb' \
+  --spec-map '\Aapp/(.+)\.rb\z=>spec/\1_spec.rb' \
   -p 4 --worker-env TEST_ENV_NUMBER
 ```
 
@@ -851,6 +915,14 @@ can drop the `jq` comparison and let the exit code be the gate:
 
 ```sh
 bundle exec mutation_test app/models/user.rb spec/models/user_spec.rb || exit 1
+```
+
+`--minimum-score N` sets that threshold for a single run, which is how you start
+below 80 in an existing codebase and ratchet the number up over time:
+
+```sh
+bundle exec mutation_test --glob 'app/**/*.rb' \
+  --spec-map '\Aapp/(.+)\.rb\z=>spec/\1_spec.rb' --minimum-score 60 || exit 1
 ```
 
 lefthook or overcommit users: call the shipped hook from your `pre-push` step
