@@ -22,7 +22,7 @@ RSpec.describe 'AI mutation gate examples' do
     end
 
     it 'checks out the repository and sets up Ruby with bundler-cache' do
-      expect(raw).to include('actions/checkout@v4')
+      expect(raw).to include('actions/checkout@v5')
       expect(raw).to include('ruby/setup-ruby@v1')
       expect(raw).to match(/bundler-cache:\s*true/)
     end

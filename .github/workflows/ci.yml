@@ -25,7 +25,7 @@ jobs:
         ruby: ['3.0', '3.1', '3.2', '3.3']
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve dependencies per Ruby version
         # The committed Gemfile.lock pins the host (Ruby 4.x) resolution, whose
@@ -82,7 +82,7 @@ jobs:
             gemfile: gemfiles/rspec3_low.gemfile
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # The committed Gemfile.lock pins the development host (Ruby 4.x); drop it
       # so this job's Ruby re-resolves its own compatible set (see the test job).
