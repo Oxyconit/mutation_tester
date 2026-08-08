@@ -210,7 +210,8 @@ mutation_test [OPTIONS] --glob 'lib/**/*.rb'
 | `--fail-fast` | Stop the run at the first surviving mutant and finish with a failing status. Works in single-file mode and with `--glob`. |
 | `--timeout-factor N` | Per-mutant timeout budget as `N` times the measured baseline test run, never below 5 s (default: 5, must be > 0). Ignored when `config.timeout` is set explicitly, which keeps a fixed budget. See [Configuration](#configuration). |
 | `--timeout-policy MODE` | Scoring policy for timed-out mutants: `killed` (default) counts a timeout as a kill; `separate` keeps timeouts out of the score entirely (`killed / (killed + survived)`) and reports them only as their own category in the console, JSON and HTML reports. |
-| `--worker-env NAME` | Set environment variable `NAME` to a distinct per-worker value before each parallel worker boots (`parallel_tests` `TEST_ENV_NUMBER` convention: worker 0 -> `""`, worker N -> `N+1`), so a `parallel_tests`-style `database.yml` selects a per-worker database. You provision the databases (e.g. `rake parallel:prepare`). Not supported by the `in_memory` runner (it falls back to `fork`). See [Making parallelism work with Rails](#making-parallelism-work-with-rails). |
+| `--worker-env NAME` | Set environment variable `NAME` to a distinct per-worker value before each parallel worker boots (`parallel_tests` `TEST_ENV_NUMBER` convention: worker 0 -> `""`, worker N -> `N+1`), so a `parallel_tests`-style `database.yml` selects a per-worker database. You provision the databases (e.g. `rake parallel:prepare`). A parallel `in_memory` run falls back to `fork` unless `--after-fork` is also given; a serial run (`-p 1`) decides mutants in a shadow workspace instead of mutating the checkout in place. See [Making parallelism work with Rails](#making-parallelism-work-with-rails). |
+| `--after-fork FILE` | Ruby file loaded inside each preloaded in-memory clone right after it forks and receives its per-worker environment (see `--worker-env`), so the app can re-establish per-worker state such as its database connection. With `--worker-env` set, this keeps the `in_memory` runner available in parallel runs. A clone whose after-fork file raises is dropped with a stderr warning and its worker falls back to file-based execution. See [Making parallelism work with Rails](#making-parallelism-work-with-rails). |
 | `--strict-equality` | Enable the opt-in strict-equality probes (`==` → `eql?` and `==` → `equal?`). Default off; expect noise on code that does not distinguish numeric types or object identity. See [Strict Equality Mutations](docs/mutation-types.md#strict-equality-mutations-opt-in). |
 | `-h, --help` | Show help message. |
 | `-v, --version` | Show version. |
@@ -510,6 +511,19 @@ MutationTester.configure do |config|
   # setting a specific mode forces it. See the Execution model section below.
   config.runner = :auto
 
+  # Per-worker database isolation (parallel_tests TEST_ENV_NUMBER convention).
+  # Set to an environment variable name to give each parallel worker a distinct
+  # value before it boots its test environment. Equivalent to the --worker-env
+  # CLI flag. See Making parallelism work with Rails below.
+  # config.worker_env_var = "TEST_ENV_NUMBER"
+
+  # Ruby file loaded inside each preloaded in-memory clone right after it forks
+  # and receives its per-worker environment, so the app can re-establish
+  # per-worker state such as its database connection. Keeps the in_memory
+  # runner available in parallel worker-env runs. Equivalent to the
+  # --after-fork CLI flag.
+  # config.after_fork_file = "db/mutation_after_fork.rb"
+
   # Two-phase test selection (RSpec only): fast-kill on a matching example
   # subset, always confirmed by the full file before a mutant is reported as
   # survived. Set to false to always run the full file. See Execution model.
@@ -651,10 +665,41 @@ bundle exec mutation_test --glob 'app/models/**/*.rb' \
 
 `MUTATION_TESTER_WORKER_ENV=TEST_ENV_NUMBER` is equivalent to passing the flag.
 
-**Runner support.** `--worker-env` works with the `fork` and `spawn` runners, where each mutant boots its test
-environment freshly and picks up the variable. The `in_memory` runner clones a single preloaded worker that has already
-connected to one database, so it cannot isolate a per-worker database; when `--worker-env` is set the runner selection
-skips `in_memory` and uses `fork`, announcing the reason on stderr.
+**Runner support.** `--worker-env` works with the `fork` and `spawn` runners out of the box, because each mutant boots
+its test environment freshly and picks up the variable. The `in_memory` runner clones a single preloaded worker that
+has already connected to one database, so setting the variable alone cannot re-point an existing connection; in a
+parallel run without `--after-fork` the runner selection therefore skips `in_memory` and uses `fork`, announcing the
+reason on stderr. A serial run (`-p 1`) has only one worker and stays in memory.
+
+**Keeping the in-memory runner with `--after-fork`.** Pass `--after-fork FILE` (or
+`MUTATION_TESTER_AFTER_FORK=FILE`) to keep the `in_memory` runner in parallel worker-env runs. Each preloaded clone
+then receives its per-worker value of the `--worker-env` variable and loads `FILE` right after forking, and that file
+is where your app re-establishes its per-worker state. For a Rails app with a `TEST_ENV_NUMBER`-keyed `database.yml`
+that usually means reconnecting ActiveRecord:
+
+```ruby
+# db/mutation_after_fork.rb
+ActiveRecord::Base.establish_connection(
+  ActiveRecord::Base.configurations
+    .configs_for(env_name: 'test', name: 'primary')
+    .configuration_hash
+    .merge(database: "myapp_test#{ENV['TEST_ENV_NUMBER']}")
+)
+```
+
+```bash
+bundle exec mutation_test app/models/user.rb spec/models/user_spec.rb \
+  -p 4 --worker-env TEST_ENV_NUMBER --after-fork db/mutation_after_fork.rb
+```
+
+The file runs once per clone, inside the clone only (never in the primary preloaded worker or in your shell process).
+If it raises, the clone reports the error on stderr and is dropped, and its worker decides its share of mutants through
+the file-based path; if the file does not exist, the whole run falls back to file-based execution with a warning.
+
+**Serial runs never mutate your checkout.** With `--worker-env` set, a `-p 1` run on the file-based runners decides
+each mutant in a shadow workspace instead of writing mutants into the real source file, so a killed process cannot
+leave a mutated file behind. (Without `--worker-env`, a serial file-based run still uses in-place mutation with a
+`.mutation_backup` file that the next run restores automatically.)
 
 **Still simplest without a parallel database setup:** if you have not provisioned per-worker databases, keep Rails
 model runs on serial `-p 1`. `--worker-env` is only useful once the databases exist.

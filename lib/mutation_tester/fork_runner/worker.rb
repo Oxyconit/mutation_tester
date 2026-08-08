@@ -238,6 +238,17 @@ spawn_clone = lambda do |request, out|
     out.close
     STDIN.reopen(File::NULL)
     request['env']&.each { |name, value| ENV[name] = value }
+    if request['after_fork']
+      begin
+        load(request['after_fork'])
+      rescue ScriptError, StandardError => e
+        clone_out.puts(JSON.generate(
+          'event' => 'clone_error',
+          'message' => "the after-fork file #{request['after_fork']} raised #{e.class}: #{e.message}; this clone is unavailable"
+        ))
+        raise
+      end
+    end
     serve.call(input, clone_out)
   end
   Process.detach(child)

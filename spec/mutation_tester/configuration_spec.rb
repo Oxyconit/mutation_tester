@@ -201,6 +201,52 @@ RSpec.describe MutationTester::Configuration do
     end
   end
 
+  describe '#after_fork_file' do
+    around do |example|
+      saved = ENV['MUTATION_TESTER_AFTER_FORK']
+      ENV.delete('MUTATION_TESTER_AFTER_FORK')
+      example.run
+    ensure
+      if saved.nil?
+        ENV.delete('MUTATION_TESTER_AFTER_FORK')
+      else
+        ENV['MUTATION_TESTER_AFTER_FORK'] = saved
+      end
+    end
+
+    it 'defaults to nil so the feature stays off' do
+      expect(described_class.new.after_fork_file).to be_nil
+    end
+
+    it 'reads the default from MUTATION_TESTER_AFTER_FORK' do
+      ENV['MUTATION_TESTER_AFTER_FORK'] = 'db/after_fork.rb'
+
+      expect(described_class.new.after_fork_file).to eq(File.expand_path('db/after_fork.rb'))
+    end
+
+    it 'normalizes a blank or whitespace value to nil' do
+      config = described_class.new
+      config.after_fork_file = '   '
+
+      expect(config.after_fork_file).to be_nil
+    end
+
+    it 'expands a relative path so forked clones resolve it regardless of their working directory' do
+      config = described_class.new
+      config.after_fork_file = 'db/after_fork.rb'
+
+      expect(config.after_fork_file).to eq(File.expand_path('db/after_fork.rb'))
+    end
+
+    it 'survives a merge round trip without leaking back to the source' do
+      config = described_class.new
+      merged = config.merge(after_fork_file: '/tmp/after_fork.rb')
+
+      expect(merged.after_fork_file).to eq('/tmp/after_fork.rb')
+      expect(config.after_fork_file).to be_nil
+    end
+  end
+
   describe '.worker_env_value' do
     it 'follows the parallel_tests TEST_ENV_NUMBER convention' do
       expect(described_class.worker_env_value(0)).to eq('')

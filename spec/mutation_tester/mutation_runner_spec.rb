@@ -47,8 +47,31 @@ RSpec.describe MutationTester::MutationRunner do
       expect(runner.in_memory_first?).to be(true)
     end
 
-    it 'opts out of the in-memory runner once a worker-env var is set' do
+    it 'opts out of the in-memory runner once a worker-env var is set for a parallel run' do
       config.worker_env_var = 'TEST_ENV_NUMBER'
+      config.parallel_processes = 2
+
+      expect(runner.in_memory_first?).to be(false)
+    end
+
+    it 'keeps the in-memory runner for a serial run even with a worker-env var' do
+      config.worker_env_var = 'TEST_ENV_NUMBER'
+      config.parallel_processes = 1
+
+      expect(runner.in_memory_first?).to be(true)
+    end
+
+    it 'keeps the in-memory runner for a parallel run when an after-fork file is configured' do
+      config.worker_env_var = 'TEST_ENV_NUMBER'
+      config.parallel_processes = 2
+      config.after_fork_file = 'db/after_fork.rb'
+
+      expect(runner.in_memory_first?).to be(true)
+    end
+
+    it 'never selects the in-memory runner for a file-based runner mode regardless of the after-fork file' do
+      config.runner = :fork
+      config.after_fork_file = 'db/after_fork.rb'
 
       expect(runner.in_memory_first?).to be(false)
     end
@@ -142,6 +165,55 @@ RSpec.describe MutationTester::MutationRunner do
 
       expect(runner).to have_received(:run_single_mutation).exactly(3).times
       expect(results.map { |r| r[:id] }).to eq([1, 2, 3])
+    end
+  end
+
+  describe '#run serial routing with a worker-env var' do
+    let(:tmp_dir) { Dir.mktmpdir }
+    let(:source_file) { File.join(tmp_dir, 'calc.rb') }
+    let(:spec_file) { File.join(tmp_dir, 'calc_spec.rb') }
+    let(:original_content) { "x = 1\n" }
+
+    before { File.write(source_file, original_content) }
+    after { FileUtils.remove_entry(tmp_dir) }
+
+    def build_serial_runner(worker_env: 'TEST_ENV_NUMBER', root: nil)
+      cfg = MutationTester::Configuration.new
+      cfg.runner = :spawn
+      cfg.parallel_processes = 1
+      cfg.worker_env_var = worker_env
+      serial_runner = described_class.new(source_file, spec_file, original_content, cfg)
+      allow(serial_runner).to receive(:discoverable_project_root).and_return(root)
+      allow(serial_runner).to receive(:run_single_mutation) do |mutation, strategy|
+        { id: mutation[:id], status: :killed, strategy: strategy }
+      end
+      serial_runner
+    end
+
+    it 'routes a serial worker-env run through the shadow strategy when a project root exists' do
+      serial_runner = build_serial_runner(root: tmp_dir)
+
+      results = nil
+      expect { results = serial_runner.run([{ id: 1 }]) }
+        .to output(/serial run decides each mutant in a shadow workspace/).to_stderr
+
+      expect(results.first[:strategy]).to eq(:shadow)
+    end
+
+    it 'falls back to in-place execution when no project root is discoverable' do
+      serial_runner = build_serial_runner(root: nil)
+
+      results = serial_runner.run([{ id: 1 }])
+
+      expect(results.first[:strategy]).to eq(:in_place)
+    end
+
+    it 'stays in place for a serial run without a worker-env var' do
+      serial_runner = build_serial_runner(worker_env: nil, root: tmp_dir)
+
+      results = serial_runner.run([{ id: 1 }])
+
+      expect(results.first[:strategy]).to eq(:in_place)
     end
   end
 
@@ -956,7 +1028,7 @@ RSpec.describe MutationTester::MutationRunner do
 
     it 'runs mutations in parallel through a pool of clones forked from the spec-preloaded worker' do
       expect(MutationTester::ForkRunner).to receive(:prepare_in_memory_pool)
-        .with(3, kind_of(MutationTester::ForkRunner)).and_call_original
+        .with(3, kind_of(MutationTester::ForkRunner), env_for: nil, after_fork: nil).and_call_original
       expect(Parallel).to receive(:map)
         .with(anything, hash_including(in_processes: 3)).and_call_original
 
@@ -1103,7 +1175,7 @@ RSpec.describe MutationTester::MutationRunner do
     it 'runs the default parallel path through the in-memory clone pool without a second full boot' do
       expect(MutationTester::ForkRunner).to receive(:new).once.and_call_original
       expect(MutationTester::ForkRunner).to receive(:prepare_in_memory_pool)
-        .with(2, kind_of(MutationTester::ForkRunner)).and_call_original
+        .with(2, kind_of(MutationTester::ForkRunner), env_for: nil, after_fork: nil).and_call_original
 
       results = run_with(:auto, processes: 2)
 
@@ -1162,15 +1234,92 @@ RSpec.describe MutationTester::MutationRunner do
       end
     end
 
-    it 'skips the in-memory runner and announces the fork fallback when a worker-env var is set' do
+    it 'skips the in-memory runner and announces the fork fallback when a worker-env var is set for a parallel run' do
       config = build_config(:auto)
       config.worker_env_var = 'TEST_ENV_NUMBER'
+      config.parallel_processes = 2
       runner = described_class.new(source_file, spec_file, original_source, config)
       expect(runner).not_to receive(:prepare_in_memory_execution)
 
       results = nil
       expect { results = Dir.chdir(project_root) { runner.run([mutations[0], mutations[2]]) } }
-        .to output(/--worker-env TEST_ENV_NUMBER is set.*in-memory runner is skipped.*fork runner/m).to_stderr
+        .to output(/--worker-env TEST_ENV_NUMBER is set without --after-fork.*in-memory runner is skipped.*fork runner/m).to_stderr
+
+      expect(results.map { |r| r[:status] }).to eq(%i[killed survived])
+    end
+
+    it 'decides a serial worker-env run in a shadow workspace, never touching the checkout or writing a backup' do
+      config = build_config(:spawn)
+      config.worker_env_var = 'TEST_ENV_NUMBER'
+      runner = described_class.new(source_file, spec_file, original_source, config)
+      expect(runner).not_to receive(:write_in_place_backup)
+
+      seen_during_run = []
+      results = nil
+      expect do
+        results = Dir.chdir(project_root) do
+          runner.run([mutations[0], mutations[2]]) do |_mutation, _index|
+            seen_during_run << [
+              File.read(source_file) == original_source,
+              File.exist?("#{source_file}.mutation_backup")
+            ]
+          end
+        end
+      end.to output(/serial run decides each mutant in a shadow workspace/).to_stderr
+
+      expect(results.map { |r| r[:status] }).to eq(%i[killed survived])
+      expect(seen_during_run.size).to eq(2)
+      expect(seen_during_run).to all(eq([true, false]))
+    end
+
+    it 'keeps a serial worker-env run in memory instead of degrading to file-based execution' do
+      config = build_config(:auto)
+      config.worker_env_var = 'TEST_ENV_NUMBER'
+      runner = described_class.new(source_file, spec_file, original_source, config)
+      expect(runner).not_to receive(:write_in_place_backup)
+
+      results = nil
+      expect { results = Dir.chdir(project_root) { runner.run([mutations[0], mutations[2]]) } }
+        .to output(/In-memory execution selected \(serial/).to_stderr
+
+      expect(results.map { |r| r[:status] }).to eq(%i[killed survived])
+    end
+
+    it 'keeps a parallel worker-env run in memory with an after-fork file, loading it once per clone with its own env value' do
+      hook_dir = File.join(tmp_dir, 'hooks')
+      FileUtils.mkdir_p(hook_dir)
+      hook_file = File.join(tmp_dir, 'after_fork.rb')
+      File.write(hook_file, <<~RUBY)
+        File.write(File.join(#{hook_dir.inspect}, "hook-\#{ENV['MT_DB']}-\#{Process.pid}.txt"), 'x')
+      RUBY
+
+      config = build_config(:auto)
+      config.parallel_processes = 2
+      config.worker_env_var = 'MT_DB'
+      config.after_fork_file = hook_file
+      runner = described_class.new(source_file, spec_file, original_source, config)
+
+      results = nil
+      expect { results = Dir.chdir(project_root) { runner.run(mutations) } }
+        .to output(/In-memory execution selected \(parallel/).to_stderr
+
+      expect(results.map { |r| r[:status] }).to eq(%i[killed killed survived stillborn])
+      values = Dir.glob(File.join(hook_dir, 'hook-*.txt')).map do |path|
+        File.basename(path, '.txt').split('-')[1]
+      end
+      expect(values.sort).to eq(['', '2'])
+    end
+
+    it 'falls back to file-based execution with a message when the configured after-fork file does not exist' do
+      config = build_config(:in_memory)
+      config.parallel_processes = 2
+      config.worker_env_var = 'MT_DB'
+      config.after_fork_file = File.join(tmp_dir, 'missing_hook.rb')
+      runner = described_class.new(source_file, spec_file, original_source, config)
+
+      results = nil
+      expect { results = Dir.chdir(project_root) { runner.run([mutations[0], mutations[2]]) } }
+        .to output(/after-fork file .*missing_hook\.rb does not exist.*Falling back to file-based execution/m).to_stderr
 
       expect(results.map { |r| r[:status] }).to eq(%i[killed survived])
     end

@@ -56,16 +56,17 @@ module MutationTester
       elsif in_memory_first?
         run_in_memory_series(mutations, &progress_callback)
       elsif @config.parallel_processes == 1
-        run_in_place_series(mutations, &progress_callback)
+        run_file_based_series(mutations, &progress_callback)
       else
         run_in_shadow_parallel(mutations, &progress_callback)
       end
     end
 
     def in_memory_first?
-      return false if @config.worker_env_var
+      return false unless %i[in_memory auto].include?(@config.runner)
+      return true unless @config.worker_env_var
 
-      %i[in_memory auto].include?(@config.runner)
+      @config.parallel_processes == 1 || !@config.after_fork_file.nil?
     end
 
     def run_in_memory_series(mutations, &progress_callback)
@@ -100,7 +101,12 @@ module MutationTester
       blocker = prepare_in_memory_execution
       return fall_back_to_parallel_file_based(blocker, mutations, &progress_callback) if blocker
 
-      pool = ForkRunner.prepare_in_memory_pool([@config.parallel_processes, mutations.size].min, @in_memory_runner)
+      pool = ForkRunner.prepare_in_memory_pool(
+        [@config.parallel_processes, mutations.size].min,
+        @in_memory_runner,
+        env_for: worker_env_for,
+        after_fork: @config.after_fork_file
+      )
       if pool.compact.empty?
         return fall_back_to_parallel_file_based('the preloaded worker pool could not be cloned', mutations, &progress_callback)
       end
@@ -157,6 +163,28 @@ module MutationTester
         end
       end
       mapped || collected
+    ensure
+      cleanup_shadow_workspaces
+    end
+
+    def run_file_based_series(mutations, &progress_callback)
+      project_root = @config.worker_env_var ? discoverable_project_root : nil
+      return run_in_place_series(mutations, &progress_callback) unless project_root
+
+      run_in_shadow_series(mutations, project_root, &progress_callback)
+    end
+
+    def run_in_shadow_series(mutations, project_root, &progress_callback)
+      warn "[MutationTester] --worker-env #{@config.worker_env_var} is set, so the serial run decides each mutant in a shadow workspace and never mutates the checkout in place."
+      shadow_run_root
+      results = []
+      mutations.each_with_index do |mutation, index|
+        result = run_single_mutation(mutation, :shadow, project_root)
+        progress_callback.call(mutation, index + 1) if progress_callback
+        results << result
+        break if stop_early?(result)
+      end
+      results
     ensure
       cleanup_shadow_workspaces
     end
@@ -401,6 +429,9 @@ module MutationTester
 
     def prepare_in_memory_execution
       return 'Process.fork is not supported on this platform' unless ForkRunner.available?
+      if @config.after_fork_file && !File.exist?(@config.after_fork_file)
+        return "the after-fork file #{@config.after_fork_file} does not exist"
+      end
       if InMemoryLoader.load_time_defined_guard?(@original_content)
         return 'the source file uses defined? at load time, so redefinition would silently skip the guarded code'
       end
@@ -451,7 +482,7 @@ module MutationTester
       offset_callback = progress_callback && lambda do |mutation, index|
         progress_callback.call(mutation, completed + index)
       end
-      run_in_place_series(mutations, &offset_callback)
+      run_file_based_series(mutations, &offset_callback)
     end
 
     def fall_back_to_parallel_file_based(reason, mutations, &progress_callback)
@@ -470,8 +501,9 @@ module MutationTester
     def announce_worker_env_in_memory_opt_out
       return unless @config.worker_env_var
       return unless %i[in_memory auto].include?(@config.runner)
+      return if @config.parallel_processes == 1 || @config.after_fork_file
 
-      warn "[MutationTester] --worker-env #{@config.worker_env_var} is set, so the in-memory runner is skipped (its clones share one preloaded database connection); using the fork runner for per-worker database isolation."
+      warn "[MutationTester] --worker-env #{@config.worker_env_var} is set without --after-fork, so the in-memory runner is skipped (its clones share one preloaded database connection); using the fork runner for per-worker database isolation. Pass --after-fork FILE to keep the in-memory runner and re-establish per-worker connections inside each clone."
     end
 
     def run_mutation_load_time(mutation, result, project_root)
