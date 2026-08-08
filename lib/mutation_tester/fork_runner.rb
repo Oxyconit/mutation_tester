@@ -39,10 +39,10 @@ module MutationTester
         refill_pool(pool_key(use_bundle_exec, framework), count, primary, env_for: env_for)
       end
 
-      def prepare_in_memory_pool(count, primary)
+      def prepare_in_memory_pool(count, primary, env_for: nil, after_fork: nil)
         return [] unless available? && primary&.ready?
 
-        refill_pool(IN_MEMORY_POOL_KEY, count, primary)
+        refill_pool(IN_MEMORY_POOL_KEY, count, primary, env_for: env_for, after_fork: after_fork)
       end
 
       def in_memory_pool_prepared?
@@ -116,13 +116,13 @@ module MutationTester
         Parallel.worker_number if defined?(Parallel) && Parallel.respond_to?(:worker_number)
       end
 
-      def refill_pool(key, count, primary, env_for: nil)
+      def refill_pool(key, count, primary, env_for: nil, after_fork: nil)
         entry = (pool[key] ||= { owner: Process.pid, runners: [] })
         entry[:runners] = entry[:runners].each_with_index.map do |runner, index|
-          runner&.ready? ? runner : primary.fork_clone(env: env_for&.call(index))
+          runner&.ready? ? runner : primary.fork_clone(env: env_for&.call(index), after_fork: after_fork)
         end
         entry[:runners].size.upto(count - 1) do |index|
-          entry[:runners] << primary.fork_clone(env: env_for&.call(index))
+          entry[:runners] << primary.fork_clone(env: env_for&.call(index), after_fork: after_fork)
         end
         entry[:runners]
       end
@@ -198,7 +198,7 @@ module MutationTester
       fail_worker
     end
 
-    def fork_clone(env: nil)
+    def fork_clone(env: nil, after_fork: nil)
       return nil unless ready?
       return nil unless File.respond_to?(:mkfifo)
 
@@ -210,6 +210,7 @@ module MutationTester
 
       clone_request = { 'job' => job_path, 'events' => events_path }
       clone_request['env'] = env if env
+      clone_request['after_fork'] = after_fork if after_fork
       @job_writer.puts(JSON.generate('clone' => clone_request))
       event = read_event(monotonic_time + CLONE_TIMEOUT)
       return nil unless event.is_a?(Hash) && event['event'] == 'cloned'
@@ -262,6 +263,11 @@ module MutationTester
 
           sleep(HANDSHAKE_POLL)
           next
+        end
+
+        if event['event'] == 'clone_error'
+          warn("[MutationTester] #{event['message']}")
+          return false
         end
 
         return event['event'] == 'ready'

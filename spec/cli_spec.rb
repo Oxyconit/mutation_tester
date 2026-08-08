@@ -72,6 +72,37 @@ RSpec.describe 'exe/mutation_test CLI' do
     end
   end
 
+  describe '--after-fork per-worker isolation for the in-memory runner' do
+    it 'documents the flag in the help output' do
+      output, status = run_cli('--help')
+
+      expect(status).to eq(0)
+      expect(output).to match(/--after-fork FILE/)
+    end
+
+    it 'keeps a parallel worker-env run in memory when an after-fork file is given' do
+      Dir.mktmpdir do |dir|
+        hook = File.join(dir, 'after_fork.rb')
+        File.write(hook, "MT_CLI_AFTER_FORK = true unless defined?(MT_CLI_AFTER_FORK)\n")
+
+        output, status = run_cli('-p', '2', '--worker-env', 'TEST_ENV_NUMBER', '--after-fork', hook,
+                                 CLI_SOURCE, CLI_SPEC)
+
+        expect(status).to eq(0)
+        expect(output).to match(/In-memory execution selected \(parallel/)
+        expect(output).not_to match(/in-memory runner is skipped/)
+      end
+    end
+
+    it 'decides a serial worker-env run in a shadow workspace instead of mutating the checkout in place' do
+      output, status = run_cli('-p', '1', '--runner', 'spawn', '--worker-env', 'TEST_ENV_NUMBER',
+                               CLI_SOURCE, CLI_SPEC)
+
+      expect(status).to eq(0)
+      expect(output).to match(/serial run decides each mutant in a shadow workspace/)
+    end
+  end
+
   describe '--timeout-factor and --timeout-policy' do
     it 'documents both flags in the help output' do
       output, status = run_cli('--help')

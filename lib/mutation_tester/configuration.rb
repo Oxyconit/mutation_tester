@@ -19,7 +19,8 @@ module MutationTester
       number <= 0 ? '' : (number + 1).to_s
     end
 
-    attr_reader :parallel_processes, :runner, :worker_env_var, :timeout, :timeout_factor, :timeout_policy
+    attr_reader :parallel_processes, :runner, :worker_env_var, :after_fork_file, :timeout, :timeout_factor,
+      :timeout_policy
 
     attr_accessor :baseline_duration,
       :baseline_timeout,
@@ -38,6 +39,7 @@ module MutationTester
       self.parallel_processes = ENV['MUTATION_TESTER_PARALLEL_PROCESSES'] || self.class.auto_parallel_processes
       self.runner = ENV['MUTATION_TESTER_RUNNER'] || :auto
       self.worker_env_var = ENV['MUTATION_TESTER_WORKER_ENV']
+      self.after_fork_file = ENV['MUTATION_TESTER_AFTER_FORK']
       @timeout = DEFAULT_TIMEOUT
       @timeout_factor = DEFAULT_TIMEOUT_FACTOR
       @timeout_policy = :killed
@@ -134,6 +136,11 @@ module MutationTester
     def worker_env_var=(value)
       normalized = value.to_s.strip
       @worker_env_var = normalized.empty? ? nil : normalized
+    end
+
+    def after_fork_file=(value)
+      normalized = value.to_s.strip
+      @after_fork_file = normalized.empty? ? nil : File.expand_path(normalized)
     end
 
     def worker_env_assignment(index)

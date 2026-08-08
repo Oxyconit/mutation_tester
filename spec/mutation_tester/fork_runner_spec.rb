@@ -215,6 +215,82 @@ RSpec.describe MutationTester::ForkRunner do
       end
     end
 
+    it 'hands each pooled in-memory clone its own environment value from env_for' do
+      Dir.mktmpdir do |dir|
+        source, spec = write_fixture(dir)
+        File.write(spec, <<~RUBY)
+          require_relative 'thing'
+
+          RSpec.describe Thing do
+            it('records the worker env value') do
+              File.write(File.join(#{dir.inspect}, "seen-\#{ENV['MT_ENV_PROBE']}.txt"), 'x')
+              expect(Thing.new.val).to eq(1)
+            end
+          end
+        RUBY
+        primary = described_class.new(use_bundle_exec: false)
+        begin
+          expect(primary.preload(spec, chdir: dir).first).to be(true)
+
+          clones = described_class.prepare_in_memory_pool(
+            2, primary,
+            env_for: ->(index) { { 'MT_ENV_PROBE' => MutationTester::Configuration.worker_env_value(index) } }
+          )
+          original = File.read(source)
+          clones[0].execute_in_memory(source: original, path: source, timeout: 30, chdir: dir)
+          clones[1].execute_in_memory(source: original, path: source, timeout: 30, chdir: dir)
+
+          expect(File.exist?(File.join(dir, 'seen-.txt'))).to be(true)
+          expect(File.exist?(File.join(dir, 'seen-2.txt'))).to be(true)
+        ensure
+          primary.shutdown
+        end
+      end
+    end
+
+    it 'loads the after-fork file exactly once inside each clone and never in the primary' do
+      Dir.mktmpdir do |dir|
+        _source, spec = write_fixture(dir)
+        hook = File.join(dir, 'after_fork.rb')
+        File.write(hook, "File.write(File.join(#{dir.inspect}, \"hook-\#{Process.pid}.txt\"), 'x')\n")
+        primary = described_class.new(use_bundle_exec: false)
+        begin
+          expect(primary.preload(spec, chdir: dir).first).to be(true)
+
+          clones = described_class.prepare_in_memory_pool(2, primary, after_fork: hook)
+          expect(clones.compact.size).to eq(2)
+          expect(clones).to all(be_ready)
+
+          markers = Dir.glob(File.join(dir, 'hook-*.txt'))
+          pids = markers.map { |path| File.basename(path, '.txt').split('-').last.to_i }
+          expect(pids).to match_array(clones.map { |clone| worker_pid(clone) })
+          expect(pids).not_to include(worker_pid(primary))
+        ensure
+          primary.shutdown
+        end
+      end
+    end
+
+    it 'reports a clone whose after-fork file raises and drops that clone from the pool' do
+      Dir.mktmpdir do |dir|
+        _source, spec = write_fixture(dir)
+        hook = File.join(dir, 'after_fork.rb')
+        File.write(hook, "raise 'db handshake boom'\n")
+        primary = described_class.new(use_bundle_exec: false)
+        begin
+          expect(primary.preload(spec, chdir: dir).first).to be(true)
+
+          clones = nil
+          expect { clones = described_class.prepare_in_memory_pool(1, primary, after_fork: hook) }
+            .to output(/after-fork file .*after_fork\.rb raised RuntimeError: db handshake boom/).to_stderr
+
+          expect(clones).to eq([nil])
+        ensure
+          primary.shutdown
+        end
+      end
+    end
+
     it 'replaces a dead in-memory slot on the next prepare call and shuts pooled clones down before reuse' do
       Dir.mktmpdir do |dir|
         _source, spec = write_fixture(dir)

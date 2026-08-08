@@ -134,6 +134,18 @@ no fallback is possible.
   in a fresh fork of its own clone. If a pooled worker dies mid-run, that
   worker finishes its share of mutants through the file-based path with a
   warning; the other workers stay in memory.
+- With `--worker-env` the preloaded clones would all share the primary
+  worker's already-established database connection, so a parallel run
+  (`-p N`, N > 1) skips the in-memory runner with a warning unless
+  `--after-fork FILE` is also given. With `--after-fork`, each clone
+  receives its per-worker value of the `--worker-env` variable and loads
+  `FILE` right after forking, and that file re-establishes the per-worker
+  state (typically the ActiveRecord connection), which keeps the whole run
+  in memory with per-worker database isolation. A serial run (`-p 1`) has
+  only one worker and stays in memory without any hook. A clone whose
+  after-fork file raises reports the error on stderr and is dropped, and
+  its worker falls back to the file-based path; a missing after-fork file
+  makes the whole run fall back with a warning.
 - Before any mutant runs, the runner re-applies the **unmutated** source in a
   probe child and runs the suite. If that probe fails (for example the file has
   top-level side effects that break on a second execution, or the class is

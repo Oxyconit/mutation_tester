@@ -88,8 +88,12 @@ OptionParser.new do |opts|
     options[:strict_equality] = true
   end
 
-  opts.on('--worker-env NAME', 'Set environment variable NAME to a distinct per-worker value before each parallel worker boots (parallel_tests TEST_ENV_NUMBER convention: worker 0 -> "", worker N -> N+1), so a parallel_tests-style database.yml selects a per-worker database. Provision the databases yourself (e.g. rake parallel:prepare). The in_memory runner cannot isolate a per-worker database, so this flag makes the runner fall back to fork.') do |name|
+  opts.on('--worker-env NAME', 'Set environment variable NAME to a distinct per-worker value before each parallel worker boots (parallel_tests TEST_ENV_NUMBER convention: worker 0 -> "", worker N -> N+1), so a parallel_tests-style database.yml selects a per-worker database. Provision the databases yourself (e.g. rake parallel:prepare). Without --after-fork a parallel in_memory run falls back to fork (preloaded clones share one database connection); pair it with --after-fork to keep the in_memory runner. A serial run (-p 1) decides mutants in a shadow workspace instead of mutating the checkout in place.') do |name|
     options[:worker_env] = name
+  end
+
+  opts.on('--after-fork FILE', 'Ruby file loaded inside each preloaded in-memory clone right after it forks and receives its per-worker environment (see --worker-env), so the app can re-establish per-worker state such as its database connection (e.g. a file calling ActiveRecord::Base.establish_connection). With --worker-env set, this keeps the in_memory runner available in parallel runs.') do |file|
+    options[:after_fork] = file
   end
 
   opts.on('-h', '--help', 'Show this help message') do
@@ -178,6 +182,7 @@ apply_configuration = lambda do
     config.timeout_factor = options[:timeout_factor] if options[:timeout_factor]
     config.timeout_policy = options[:timeout_policy] if options[:timeout_policy]
     config.worker_env_var = options[:worker_env] if options.key?(:worker_env)
+    config.after_fork_file = options[:after_fork] if options.key?(:after_fork)
     config.fail_fast = options.fetch(:fail_fast, false)
     config.mutation_types[:strict_equality] = true if options[:strict_equality]
 
