@@ -70,6 +70,7 @@ supervise_child = lambda do |job, out, child_body|
     rescue Errno::EACCES, Errno::EPERM
     end
     Dir.chdir(job['chdir']) if job['chdir']
+    job['env']&.each { |name, value| ENV[name] = value }
     mirror_load_path.call(job['mirror_of'], job['chdir'])
     sink = File.open(job['log'] || File::NULL, 'w')
     sink.sync = true

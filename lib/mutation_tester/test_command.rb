@@ -51,7 +51,8 @@ module MutationTester
             capture: capture,
             args: filter_args,
             stop_on_first_failure: @stop_on_first_failure,
-            mirror_of: mirror_of
+            mirror_of: mirror_of,
+            env: worker_env_overrides
           )
         end
       end

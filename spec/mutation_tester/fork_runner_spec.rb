@@ -51,6 +51,37 @@ RSpec.describe MutationTester::ForkRunner do
     end
   end
 
+  describe '#execute per-job env override' do
+    it 'applies the override inside the test child instead of inheriting the parent value' do
+      Dir.mktmpdir do |dir|
+        spec = File.join(dir, 'env_spec.rb')
+        File.write(spec, <<~RUBY)
+          RSpec.describe 'env' do
+            it('records the value the test process sees') do
+              File.write(File.join(#{dir.inspect}, 'seen.txt'), ENV['MT_ENV_PROBE'].to_s)
+              expect(1).to eq(1)
+            end
+          end
+        RUBY
+
+        previous = ENV['MT_ENV_PROBE']
+        ENV['MT_ENV_PROBE'] = 'parent-value'
+        begin
+          runner = described_class.new(use_bundle_exec: false)
+          expect(runner).to be_ready
+
+          result = runner.execute(spec, timeout: 30, chdir: dir, env: { 'MT_ENV_PROBE' => '4' })
+
+          expect(result.passed?).to be(true)
+          expect(File.read(File.join(dir, 'seen.txt'))).to eq('4')
+          runner.shutdown
+        ensure
+          previous ? ENV['MT_ENV_PROBE'] = previous : ENV.delete('MT_ENV_PROBE')
+        end
+      end
+    end
+  end
+
   describe '.prepare_pool' do
     it 'forks ready clones from the preloaded primary without spawning new worker processes' do
       primary = described_class.acquire(use_bundle_exec: false)

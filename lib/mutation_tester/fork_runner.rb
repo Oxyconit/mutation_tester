@@ -154,7 +154,7 @@ module MutationTester
     end
 
     def execute(spec_file, timeout: nil, chdir: nil, capture: false, args: [], stop_on_first_failure: false,
-                mirror_of: nil)
+                mirror_of: nil, env: nil)
       log = capture ? Tempfile.new(['mutation_tester_fork', '.log']) : nil
       job = {
         spec: spec_file,
@@ -163,7 +163,8 @@ module MutationTester
         log: log&.path,
         args: args,
         stop_on_first_failure: stop_on_first_failure,
-        mirror_of: mirror_of
+        mirror_of: mirror_of,
+        env: env
       }
       @job_writer.puts(JSON.generate(job))
       status = await_result(timeout)['status']

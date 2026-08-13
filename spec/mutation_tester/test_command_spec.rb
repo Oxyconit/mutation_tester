@@ -161,10 +161,27 @@ RSpec.describe MutationTester::TestCommand do
         .with(use_bundle_exec: false, framework: :rspec).and_return(fork_runner)
       expect(fork_runner).to receive(:execute)
         .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: [], stop_on_first_failure: false,
-              mirror_of: nil)
+              mirror_of: nil, env: nil)
         .and_return(result)
 
       cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, runner: :fork)
+      expect(cmd.run(timeout: 5)).to equal(result)
+    end
+
+    it 'delegates the per-worker env override to the fork runner so a booted worker never inherits the parent value' do
+      fork_runner = instance_double(MutationTester::ForkRunner)
+      result = MutationTester::TestCommand::Result.new(true, false)
+      allow(Parallel).to receive(:worker_number).and_return(3)
+      allow(MutationTester::ForkRunner).to receive(:available?).and_return(true)
+      allow(MutationTester::ForkRunner).to receive(:acquire)
+        .with(use_bundle_exec: false, framework: :rspec).and_return(fork_runner)
+      expect(fork_runner).to receive(:execute)
+        .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: [], stop_on_first_failure: false,
+              mirror_of: nil, env: { 'TEST_ENV_NUMBER' => '4' })
+        .and_return(result)
+
+      cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, runner: :fork,
+                                worker_env_var: 'TEST_ENV_NUMBER')
       expect(cmd.run(timeout: 5)).to equal(result)
     end
 
@@ -176,7 +193,7 @@ RSpec.describe MutationTester::TestCommand do
         .with(use_bundle_exec: false, framework: :rspec).and_return(fork_runner)
       expect(fork_runner).to receive(:execute)
         .with('spec/foo_spec.rb', timeout: 5, chdir: Dir.pwd, capture: false, args: ['-e', '#foo'],
-              stop_on_first_failure: false, mirror_of: nil)
+              stop_on_first_failure: false, mirror_of: nil, env: nil)
         .and_return(result)
 
       cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, runner: :fork, example_filters: ['#foo'])
