@@ -98,6 +98,17 @@ is untouched and executes every test. Only the mutant runs opt in: the baseline
 run and the shadow-workspace sanity check are expected to pass and always run the
 whole file, so a failing baseline still reports every failure it finds.
 
+The opt-in kill matrix (`--kill-matrix`, `config.kill_matrix = true`) turns the
+early stop off for mutant runs too, on all three runners, because it has to
+record every failing test of every mutant. A small recorder is loaded next to the
+test file (`--require` for RSpec and `ruby -r` for Minitest on `spawn`, at worker
+boot on the preloaded runners) and appends the failing test ids to a per-run
+temporary file named through the environment. The ids deliberately do not travel
+through the fork worker's result pipe: the parent reads that pipe only after the
+child has finished, so a list larger than the pipe buffer would block the child
+until the deadline and turn a kill into a timeout. See
+[Finding redundant tests](../readme.md#finding-redundant-tests).
+
 The pathological case it removes is a mutant that breaks something every test
 touches (a class body that no longer loads, a constant every test reads). Such a
 mutant used to re-raise the same error once per test, which on a large test file
@@ -199,6 +210,9 @@ and spawn); selection only changes how fast killed mutants die. The in-memory
 runner (the default path) performs no selection at all: every mutant runs the
 full preloaded example set, which is why its report omits the `Selection:`
 summary line (see the in-memory limitations above).
+
+The kill matrix mode (`--kill-matrix`) turns selection off for the run, because a
+subset run would under-report the tests that kill a mutant.
 
 Disable it with the `--no-test-selection` CLI flag or in Ruby:
 

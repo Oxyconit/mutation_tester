@@ -1,0 +1,77 @@
+# Redundant-test audit for GitHub Actions (mutation_tester gem). Runs
+# mutation_test --kill-matrix, which records for every mutant the tests that
+# kill it, and publishes two lists of candidates to the job summary: tests that
+# kill no mutant, and tests whose every kill is shared with another test. This
+# is an AUDIT, not a gate: it runs on a schedule and never fails the job because
+# of what it finds. Copy to .github/workflows/, edit the "EDIT:" lines. Needs jq
+# (preinstalled on ubuntu runners); see mutation_test.yml for the quality gate.
+#
+# Read the lists as candidates to review. Remove one test at a time and re-run:
+# two tests can cover for each other, so deleting both may let mutants survive.
+
+name: Redundant Test Audit
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'   # EDIT: weekly, Monday 04:00 UTC
+  workflow_dispatch:
+
+jobs:
+  redundant_tests:
+    name: Redundant test audit
+    runs-on: ubuntu-latest
+    # The kill matrix runs every mutant against the full test file without
+    # stopping at the first failure, so it is slower than the normal gate.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'   # EDIT: match your project's Ruby (floor is 3.0)
+          bundler-cache: true
+
+      - name: Run mutation tests with the kill matrix (JSON report on stdout)
+        run: |
+          # EDIT: select YOUR sources; add --spec-glob 'test/{name}_test.rb' for Minitest.
+          # --minimum-score 0 keeps the score from failing this audit; a broken run
+          # (failing baseline, no file measured) still fails the step.
+          bundle exec mutation_test --kill-matrix --json --minimum-score 0 \
+            --timeout-factor 10 --glob 'lib/**/*.rb' > kill_matrix.json
+
+      - name: List redundancy candidates in the job summary
+        run: |
+          kill_nothing=$(jq -r '(.files // [.])[]
+            | (.metadata.spec_file | ltrimstr("\($ENV.PWD)/")) as $spec
+            | [.mutations[].killed_by[]] as $killers
+            | .tests[] | select(.status == "passed" and (.id | IN($killers[]) | not))
+            | "- `\(.id)` \(.name) (\($spec))"' kill_matrix.json)
+          shared_only=$(jq -r '(.files // [.])[]
+            | (.metadata.spec_file | ltrimstr("\($ENV.PWD)/")) as $spec
+            | [.mutations[] | select(.status == "killed") | .killed_by] as $kills
+            | .tests[] | .id as $id
+            | [$kills[] | select(index($id))] as $mine
+            | select(($mine | length) > 0 and all($mine[]; length > 1))
+            | "- `\(.id)` \(.name) (\($spec))"' kill_matrix.json)
+          unknown=$(jq '[(.files // [.])[] | .mutations[]
+            | select((.status == "killed" or .status == "timeout") and (.killed_by | length) == 0)]
+            | length' kill_matrix.json)
+          {
+            echo "## Redundant test audit"
+            echo "### Tests that kill no mutant"
+            echo "${kill_nothing:-None.}"
+            echo "### Tests whose every kill is shared with another test"
+            echo "${shared_only:-None.}"
+            echo
+            echo "Mutants with unknown killers (timeouts, load failures): **${unknown}**."
+            echo "Remove one test at a time and re-run: two listed tests can cover for each other."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the kill matrix report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kill-matrix
+          path: kill_matrix.json
