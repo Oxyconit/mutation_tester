@@ -822,11 +822,15 @@ Read the lists as candidates to review, not as a delete list:
   failing (typically the mutated file no longer loads). Their killers are unknown, so a test must never be called
   redundant because of them. Recipe 3 counts them; a higher `--timeout-factor` usually turns timeouts into real kills.
 - A skipped test has `"status": "skipped"` in `tests[]` and is left out of the recipes.
+- If the baseline passes but not a single test could be recorded (the test file defines no tests, or a plugin replaces
+  the framework's reporters), the run stops with an error instead of reporting an empty matrix.
 
 The mode is an occasional audit, not a gate. Without the early stop a mutant that breaks something every test touches
 pays for the whole test file, so expect a slower run and consider `--timeout-factor 10`. It cannot be combined with
-`--fail-fast`, which would stop the run at the first surviving mutant and leave the matrix incomplete. For a scheduled
-CI job that publishes the candidates, see
+`--fail-fast` (or `config.fail_fast`), which would stop the run at the first surviving mutant and leave the matrix
+incomplete: the CLI rejects the pair as a usage error and a run configured from Ruby or rake fails before the baseline.
+
+For a scheduled CI job that publishes the candidates, see
 [`examples/github_actions/redundant_tests.yml`](examples/github_actions/redundant_tests.yml) and
 [docs/ci.md](docs/ci.md#redundant-test-audit-scheduled-job).
 

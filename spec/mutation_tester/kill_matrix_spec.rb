@@ -209,6 +209,77 @@ RSpec.describe 'kill matrix' do
     expect(results.first[:killed_by].size).to eq(1500)
   end
 
+  describe 'runs that cannot produce a trustworthy matrix' do
+    def run_core_capturing(test_file, config)
+      core = MutationTester::Core.new(source_file, test_file, config)
+      output = StringIO.new
+      original_stdout = $stdout
+      $stdout = output
+      passed = quietly_stderr { Dir.chdir(project_root) { core.run } }
+      [passed, output.string, core]
+    ensure
+      $stdout = original_stdout
+    end
+
+    def quietly_stderr
+      original_stderr = $stderr
+      $stderr = StringIO.new
+      yield
+    ensure
+      $stderr = original_stderr
+    end
+
+    def audit_config(runner_mode)
+      config = build_config(runner_mode)
+      config.reporters = []
+      config
+    end
+
+    it 'aborts before any mutant runs when a minitest plugin drops the recorder, instead of reporting an empty matrix' do
+      path = write_minitest_file
+      File.write(path, File.read(path) + <<~RUBY)
+
+        module Minitest
+          def self.plugin_zz_replace_reporters_init(_options)
+            reporter.reporters.clear
+          end
+        end
+        Minitest.register_plugin(:zz_replace_reporters)
+      RUBY
+
+      passed, output, core = run_core_capturing(path, audit_config(:spawn))
+
+      expect(passed).to be(false)
+      expect(output).to include('could not record a single test')
+      expect(core.mutations).to be_empty
+      expect(core.results).to be_empty
+    end
+
+    it 'aborts the same way for an rspec file whose baseline passes without a single example' do
+      path = File.join(project_root, 'spec', 'calc_spec.rb')
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "require_relative '../lib/calc'\n\nRSpec.describe(Calc) {}\n")
+
+      passed, output, core = run_core_capturing(path, audit_config(:fork))
+
+      expect(passed).to be(false)
+      expect(output).to include('could not record a single test')
+      expect(core.results).to be_empty
+    end
+
+    it 'refuses fail_fast set through the configuration before the baseline runs, because the matrix would be partial' do
+      config = audit_config(:spawn)
+      config.fail_fast = true
+      expect(MutationTester::TestCommand).not_to receive(:new)
+
+      passed, output, core = run_core_capturing(write_rspec_file, config)
+
+      expect(passed).to be(false)
+      expect(output).to include('kill_matrix cannot be combined with fail_fast')
+      expect(core.results).to be_empty
+    end
+  end
+
   describe 'the JSON report of a full run' do
     def run_core(test_file, kill_matrix:)
       config = build_config(:fork, kill_matrix: kill_matrix)

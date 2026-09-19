@@ -19,6 +19,7 @@ module MutationTester
 
     def run
       print_header
+      return report_conflicting_modes if @config.kill_matrix && @config.fail_fast
       return false unless run_original_tests
 
       generate_mutations
@@ -100,8 +101,24 @@ module MutationTester
       end
       puts Rainbow('✓ Original tests passed').green
       @tests = recorded_tests(result.tests)
+      return report_unrecorded_baseline if @config.kill_matrix && @tests.empty?
+
       @config.baseline_duration = baseline_elapsed
       true
+    end
+
+    def report_conflicting_modes
+      puts Rainbow('❌ kill_matrix cannot be combined with fail_fast.').red
+      puts Rainbow('   fail_fast stops the run at the first surviving mutant, which would leave the kill matrix incomplete.').red
+      false
+    end
+
+    def report_unrecorded_baseline
+      puts Rainbow('❌ The kill matrix could not record a single test of the passing baseline run.').red
+      puts Rainbow('   Without the list of tests it cannot tell which tests kill a mutant, so the run is aborted instead of').red
+      puts Rainbow('   reporting an empty matrix. Usual causes: the test file defines no tests, or a plugin or hook replaces').red
+      puts Rainbow('   the test framework reporters or ends the process before the results are written.').red
+      false
     end
 
     def monotonic_time
