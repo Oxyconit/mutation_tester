@@ -36,12 +36,12 @@ mutating them mostly yields always-killed `NoMethodError` garbage rather than a 
 - `==` → `!=`, `>`, `<`
 - `!=` → `==`, `>`, `<`
 - `<=>` → `==`
-- Range boundary: `a..b` → `a...b` and `a...b` → `a..b`, the range form of `<=` versus `<` on the upper bound. Only a
-  test that uses the upper bound itself (the last element, the last character kept by `text[0...limit]`) kills it. An
-  endless range (`1..`, `text[1..]`) and a range ending at `Float::INFINITY` are left alone, because both forms hold the
-  same values there; beginless ranges (`..5`) are mutated, and flip-flops are not ranges and are untouched. Reported with
-  `type: comparison`, `original` and `mutated` being the two operators (e.g. `Change .. to ...`). Numeric literal bounds
-  still get their own `number` mutants.
+- Range boundary: `a..b` → `a...b` and `a...b` → `a..b`, the range form of `<=` versus `<` on the upper bound. Only
+  a test that uses the upper bound itself (the last element, the last character kept by `text[0...limit]`) kills it.
+  An endless range (`1..`, `1..nil`, `text[1..]`) and a range ending at `Float::INFINITY` are left alone, because both
+  forms hold the same values there; beginless ranges (`..5`) are mutated, and flip-flops are not ranges and are
+  untouched. Reported with `type: comparison`, `original` and `mutated` being the two operators (e.g.
+  `Change .. to ...`). Numeric literal bounds still get their own `number` mutants.
 
 ## Strict Equality Mutations (opt-in)
 
@@ -141,12 +141,16 @@ mutating them mostly yields always-killed `NoMethodError` garbage rather than a 
   `validates :role, presence: true`), braced hashes, and option hashes nested as a pair value
   (`uniqueness: { scope: :account_id, case_sensitive: false }` → `uniqueness: { case_sensitive: false }`). Unlike
   removing or nil-ing the whole argument, the call usually still loads and runs, so only a test that checks that one
-  option kills the mutant. A braced hash with a single pair becomes `{}`; a lone brace-free keyword (`m(a, k: 1)`) is
-  left to the last-argument removal, which produces the same code. Hashes that carry a double splat or hold a heredoc,
-  and hash literals that are not call arguments (`PRICES = { ... }`), are not touched. Reported with the description
-  `Remove pair <key> from <method>`. As with last-argument removal, a pair that only repeats the callee's own default
-  (`notify(user, async: false)` when `async` already defaults to `false`) yields a mutant no test can kill; annotate
-  such a line with `# mutation_tester:disable`.
+  option kills the mutant. A braced hash with a single pair becomes `{}`; a lone brace-free keyword that ends the call
+  (`m(a, k: 1)`) is left to the last-argument removal, which produces the same code, and is removed here only when a
+  block pass follows it (`m(a, k: 1, &blk)` → `m(a, &blk)`). Hashes that carry a double splat (`**opts` or an anonymous
+  `**`) and hash literals that are not call arguments (`PRICES = { ... }`) are not touched, and a pair is kept when
+  removing it would cut into a heredoc (the pair opens one, or a heredoc body lies between the pair and its neighbor).
+  Reported with the description `Remove pair <key> from <method>` on the line of the removed pair, so in a multi-line
+  call each pair can be annotated on its own line; when the removed text spans a line break, `mutated_line` is the
+  marker `(pair removed)` and `mutated` still holds the whole call after the mutation. As with last-argument removal, a
+  pair that only repeats the callee's own default (`notify(user, async: false)` when `async` already defaults to
+  `false`) yields a mutant no test can kill; annotate the line of that pair with `# mutation_tester:disable`.
 - Exclusions: operator sends (`+`, `==`, `[]`, `[]=`, `<<`, setters, ...), require-like calls (`require`,
   `require_relative`, `load`, `autoload`), block-pass arguments (`&blk`), splats (`*args`), double splats (`**opts`),
   and safe-navigation calls are not mutated by this family. A candidate whose code would no longer parse is dropped at

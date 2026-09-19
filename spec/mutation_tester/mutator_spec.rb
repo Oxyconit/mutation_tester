@@ -752,9 +752,14 @@ RSpec.describe MutationTester::Mutator, '(tables and switches)' do
       expect(pair_removals("m({ a: 1, })\n").map { |m| m[:code] }).to eq(["m({})\n"])
     end
 
-    it 'leaves a lone brace-free keyword alone because removing it is the last-argument removal' do
+    it 'leaves a lone brace-free keyword that ends the call alone because removing it is the last-argument removal' do
       expect(pair_removals("m(a, k: 1)\n")).to be_empty
       expect(pair_removals("m k: 1\n")).to be_empty
+    end
+
+    it 'removes a lone brace-free keyword followed by a block pass, which the last-argument removal cannot reach' do
+      expect(pair_removals("m(a, k: 1, &blk)\n").map { |m| m[:code] }).to eq(["m(a, &blk)\n"])
+      expect(pair_removals("m(k: 1, &blk)\n").map { |m| m[:code] }).to eq(["m(&blk)\n"])
     end
 
     it 'removes a pair of a call spread over several lines' do
@@ -768,6 +773,30 @@ RSpec.describe MutationTester::Mutator, '(tables and switches)' do
       )
     end
 
+    it 'reports a pair of a multi-line call on the line of that pair so it can be read and annotated there' do
+      source = "m(\n  a: 1,\n  b: 2\n)\n"
+
+      expect(pair_removals(source).map { |m| m.slice(:line, :source_line, :mutated_line) }).to eq(
+        [
+          { line: 2, source_line: 'a: 1,', mutated_line: '(pair removed)' },
+          { line: 3, source_line: 'b: 2', mutated_line: '(pair removed)' }
+        ]
+      )
+    end
+
+    it 'shows the mutated line itself when the removed pair does not span a line break' do
+      removal = pair_removals("m(a: 1, b: 2,\n  c: 3)\n").first
+
+      expect(removal.slice(:line, :source_line, :mutated_line))
+        .to eq(line: 1, source_line: 'm(a: 1, b: 2,', mutated_line: 'm(b: 2,')
+    end
+
+    it 'excludes only the annotated pair of a multi-line call' do
+      source = "m(\n  a: 1, # mutation_tester:disable\n  b: 2\n)\n"
+
+      expect(pair_removals(source).map { |m| m[:description] }).to eq(['Remove pair b from m'])
+    end
+
     it 'handles hash-rocket and string keys' do
       expect(pair_removals("m(:a => 1, 'b' => 2)\n").map { |m| m[:code] })
         .to eq(["m('b' => 2)\n", "m(:a => 1)\n"])
@@ -777,8 +806,43 @@ RSpec.describe MutationTester::Mutator, '(tables and switches)' do
       expect(pair_removals("m(a: 1, b: 2, **opts)\n")).to be_empty
     end
 
-    it 'does not touch a hash holding a heredoc, whose body would be left orphaned' do
-      expect(pair_removals("m(a: <<~TEXT, b: 2)\n  body\nTEXT\n")).to be_empty
+    it 'keeps the other argument mutants of a call that forwards an anonymous double splat' do
+      skip 'Anonymous double splat forwarding is unparseable before Ruby 3.2' if Gem::Version.new(RUBY_VERSION) < Gem::Version.new('3.2')
+
+      source = "def f(**)\n  g(x, a: 1, b: 2, **)\nend\n"
+      mutator = build_mutator(source)
+      descriptions = mutator.generate_mutations(Parser::CurrentRuby.parse(source))
+                            .select { |m| m[:type] == :argument }.map { |m| m[:description] }
+
+      expect(descriptions).to eq(
+        ['Remove last argument from g', 'Replace argument x with nil', 'Replace argument a: 1, b: 2, ** with nil']
+      )
+      expect(mutator.skipped_count).to eq(0)
+    end
+
+    it 'keeps the last-argument and nil mutants of a call whose pair removal raises' do
+      source = "m(a: 1, b: 2)\n"
+      mutator = build_mutator(source)
+      allow(mutator).to receive(:pair_removal_range).and_raise(StandardError, 'boom')
+
+      mutations = nil
+      expect { mutations = mutator.generate_mutations(Parser::CurrentRuby.parse(source)) }
+        .to output(/skipped 1/).to_stdout
+      descriptions = mutations.select { |m| m[:type] == :argument }.map { |m| m[:description] }
+
+      expect(descriptions).to eq(['Remove last argument from m', 'Replace argument a: 1, b: 2 with nil'])
+      expect(mutator.skipped_count).to eq(1)
+    end
+
+    it 'does not remove a pair that opens a heredoc, whose body would be left orphaned, but removes its sibling' do
+      expect(pair_removals("m(a: <<~TEXT, b: 2)\n  body\nTEXT\n").map { |m| m[:code] })
+        .to eq(["m(a: <<~TEXT)\n  body\nTEXT\n"])
+    end
+
+    it 'does not remove a pair when the removed text would swallow the body of a heredoc passed beside it' do
+      source = "m(<<~TEXT, a: 1,\n  body\nTEXT\n  b: 2)\nn(<<~TEXT)\n  other\nTEXT\n"
+
+      expect(pair_removals(source)).to be_empty
     end
 
     it 'does not touch hash literals outside call arguments or arguments of operator sends' do
@@ -841,6 +905,7 @@ RSpec.describe MutationTester::Mutator, '(tables and switches)' do
     it 'leaves an endless range alone because both forms contain the same values' do
       expect(range_swaps("x = (1..)\n")).to be_empty
       expect(range_swaps("text[1..]\n")).to be_empty
+      expect(range_swaps("x = (1..nil)\n")).to be_empty
     end
 
     it 'leaves a range ending at infinity alone because the bound can never be reached' do
