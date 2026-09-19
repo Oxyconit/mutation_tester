@@ -17,8 +17,9 @@ module MutationTester
         result[:status] || (result[:killed] ? :killed : :survived)
       end
 
-      def initialize(results, source_file, spec_file, config, interrupted: false)
+      def initialize(results, source_file, spec_file, config, interrupted: false, tests: [])
         @results = results
+        @tests = Array(tests)
         @source_file = source_file
         @spec_file = spec_file
         @config = config

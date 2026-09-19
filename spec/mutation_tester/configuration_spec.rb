@@ -448,6 +448,19 @@ RSpec.describe MutationTester::Configuration do
     end
   end
 
+  describe '#kill_matrix' do
+    it 'is off by default so normal runs keep stopping each mutant at its first failing test' do
+      expect(described_class.new.kill_matrix).to be(false)
+    end
+
+    it 'is enabled for a single run through merge without touching the source configuration' do
+      config = described_class.new
+
+      expect(config.merge(kill_matrix: true).kill_matrix).to be(true)
+      expect(config.kill_matrix).to be(false)
+    end
+  end
+
   describe '#merge option handling' do
     it 'ignores an unknown option key without raising and applies the known ones' do
       config = described_class.new

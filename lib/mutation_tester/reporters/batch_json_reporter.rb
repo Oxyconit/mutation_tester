@@ -63,7 +63,8 @@ module MutationTester
             File.expand_path(entry.source_file),
             File.expand_path(entry.spec_file),
             @config,
-            interrupted: !!entry.interrupted
+            interrupted: !!entry.interrupted,
+            tests: entry.tests
           ).report_data
         end
       end

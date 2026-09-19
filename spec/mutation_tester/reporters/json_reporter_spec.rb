@@ -147,6 +147,56 @@ RSpec.describe MutationTester::Reporters::JsonReporter do
     end
   end
 
+  describe 'kill matrix fields' do
+    let(:config) do
+      MutationTester::Configuration.new.tap do |c|
+        c.output_dir = tmp_dir
+        c.kill_matrix = true
+      end
+    end
+    let(:results) do
+      [
+        { id: 1, status: :killed, killed: true, line: 1, type: :arithmetic, description: 'k',
+          killed_by: ['FooTest#test_a', 'FooTest#test_b'] },
+        { id: 2, status: :timeout, killed: true, timeout: true, line: 3, type: :arithmetic, description: 't',
+          killed_by: [] }
+      ]
+    end
+    let(:tests) do
+      [
+        { id: 'FooTest#test_a', name: 'test_a', line: 4, status: 'passed', internal: 'dropped' },
+        { id: 'FooTest#test_c', name: 'test_c', line: 9, status: 'skipped' }
+      ]
+    end
+    let(:reporter) { described_class.new(results, 'lib/foo.rb', 'test/foo_test.rb', config, tests: tests) }
+
+    it 'marks the report as a kill matrix and lists the baseline tests with exactly the documented keys' do
+      json = JSON.parse(reporter.render, symbolize_names: true)
+
+      expect(json.keys).to eq(%i[schema_version interrupted kill_matrix tests metadata summary mutations])
+      expect(json[:kill_matrix]).to be(true)
+      expect(json[:tests]).to eq([
+        { id: 'FooTest#test_a', name: 'test_a', line: 4, status: 'passed' },
+        { id: 'FooTest#test_c', name: 'test_c', line: 9, status: 'skipped' }
+      ])
+    end
+
+    it 'emits the killers of each mutant and pins the killed entry keys' do
+      json = JSON.parse(reporter.render, symbolize_names: true)
+
+      expect(json[:mutations].map { |m| m[:killed_by] }).to eq([['FooTest#test_a', 'FooTest#test_b'], []])
+      expect(json[:mutations][0].keys)
+        .to contain_exactly(:id, :status, :killed, :line, :type, :description, :killed_by)
+    end
+
+    it 'keeps the tests list out of a report produced with the mode off even when tests were recorded' do
+      config.kill_matrix = false
+      json = JSON.parse(reporter.render, symbolize_names: true)
+
+      expect(json.keys).to contain_exactly(:schema_version, :interrupted, :metadata, :summary, :mutations)
+    end
+  end
+
   describe '#render' do
     it 'returns a JSON string byte-identical to the written report file' do
       reporter.generate

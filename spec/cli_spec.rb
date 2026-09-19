@@ -717,6 +717,21 @@ RSpec.describe 'exe/mutation_test batch mode' do
   end
 
   describe 'usage errors' do
+    it 'rejects --kill-matrix combined with --fail-fast before any mutation runs, because the matrix would be partial' do
+      Dir.mktmpdir do |dir|
+        build_project(dir)
+
+        stdout, stderr, status = run_batch_split(
+          '--kill-matrix', '--fail-fast', 'lib/adder.rb', 'test/adder_test.rb', chdir: dir
+        )
+
+        expect(status).to eq(2)
+        expect(stdout).to eq('')
+        expect(stderr).to match(/--kill-matrix cannot be combined with --fail-fast/)
+        expect(stderr).not_to match(/Running original tests/)
+      end
+    end
+
     it 'rejects --spec-map combined with an explicit SOURCE TEST pair on stderr with a usage status' do
       Dir.mktmpdir do |dir|
         stdout, stderr, status = run_batch_split(
@@ -1160,6 +1175,48 @@ RSpec.describe 'exe/mutation_test batch mode' do
         expect(status).to eq(2)
         expect(stdout).to eq('')
         expect(stderr).to match(/--staged cannot be combined with --glob/)
+      end
+    end
+  end
+
+  describe '--kill-matrix' do
+    it 'prints the baseline tests and the killers of every mutant in the single-file JSON report' do
+      Dir.mktmpdir do |dir|
+        build_project(dir)
+        system('git', '-C', dir, 'init', '-q')
+
+        stdout, _stderr, status = run_batch_split(
+          '--kill-matrix', '--json', '--minimum-score', '0', 'lib/adder.rb', 'test/adder_test.rb', chdir: dir
+        )
+
+        expect(status).to eq(0)
+        report = JSON.parse(stdout)
+        expect(report['kill_matrix']).to be(true)
+        expect(report['tests'].map { |test| test['id'] }).to eq(['AdderTest#test_add'])
+        killed = report['mutations'].select { |mutation| mutation['status'] == 'killed' }
+        expect(killed).not_to be_empty
+        expect(killed.map { |mutation| mutation['killed_by'] }.uniq).to eq([['AdderTest#test_add']])
+      end
+    end
+
+    it 'carries the tests and killers of each file inside the multi-file envelope' do
+      Dir.mktmpdir do |dir|
+        build_project(dir)
+        system('git', '-C', dir, 'init', '-q')
+
+        stdout, _stderr, status = run_batch_split(
+          '--kill-matrix', '--json', '--minimum-score', '0', '--glob', 'lib/{adder,calc}.rb',
+          '--spec-glob', 'test/{name}_test.rb', chdir: dir
+        )
+
+        expect(status).to eq(0)
+        envelope = JSON.parse(stdout)
+        tests_by_file = envelope['files'].to_h do |report|
+          [File.basename(report.dig('metadata', 'source_file')), report['tests'].map { |test| test['id'] }]
+        end
+        expect(tests_by_file).to eq('adder.rb' => ['AdderTest#test_add'], 'calc.rb' => ['CalcTest#test_compute'])
+        expect(envelope['files']).to all(include('kill_matrix' => true))
+        expect(envelope['files'].flat_map { |report| report['mutations'] }).to all(include('killed_by'))
       end
     end
   end

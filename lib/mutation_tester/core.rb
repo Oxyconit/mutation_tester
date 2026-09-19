@@ -2,7 +2,7 @@ require_relative 'progress_display'
 
 module MutationTester
   class Core
-    attr_reader :source_file, :spec_file, :mutations, :results, :config
+    attr_reader :source_file, :spec_file, :mutations, :results, :config, :tests
 
     def initialize(source_file, spec_file, config = MutationTester.configuration)
       @source_file = File.expand_path(source_file)
@@ -10,6 +10,7 @@ module MutationTester
       @config = config
       @mutations = []
       @results = []
+      @tests = []
       @parse_failed = false
       @shadow_aborted = false
       MutationRunner.recover_in_place_backup(@source_file)
@@ -98,12 +99,17 @@ module MutationTester
         return false
       end
       puts Rainbow('✓ Original tests passed').green
+      @tests = recorded_tests(result.tests)
       @config.baseline_duration = baseline_elapsed
       true
     end
 
     def monotonic_time
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def recorded_tests(entries)
+      Array(entries).uniq { |entry| entry[:id] }.sort_by { |entry| [entry[:line].to_i, entry[:id]] }
     end
 
     def replay_baseline_output(output)
@@ -186,11 +192,11 @@ module MutationTester
     def create_reporter(type)
       case type
       when :console
-        Reporters::ConsoleReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?)
+        Reporters::ConsoleReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?, tests: @tests)
       when :html
-        Reporters::HtmlReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?)
+        Reporters::HtmlReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?, tests: @tests)
       when :json
-        Reporters::JsonReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?)
+        Reporters::JsonReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?, tests: @tests)
       end
     end
 
@@ -198,7 +204,9 @@ module MutationTester
       TestCommand.new(
         @spec_file,
         use_bundle_exec: TestCommand.use_bundle_exec?(@source_file),
-        runner: @config.runner
+        runner: @config.runner,
+        record: @config.kill_matrix ? :all : nil,
+        record_root: @config.kill_matrix ? mutation_runner.recording_root : nil
       )
     end
 

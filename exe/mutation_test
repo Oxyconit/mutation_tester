@@ -76,6 +76,10 @@ OptionParser.new do |opts|
     options[:fail_fast] = true
   end
 
+  opts.on('--kill-matrix', 'Audit mode: run every mutant against the full test file without stopping at its first failing test and without test selection, and record in the JSON report which tests kill each mutant (mutations[].killed_by) plus the list of tests that ran (tests[]). Slower than a normal run; cannot be combined with --fail-fast') do
+    options[:kill_matrix] = true
+  end
+
   opts.on('--timeout-factor N', Float, "Per-mutant timeout budget as N times the measured baseline test run, never below #{MutationTester::Configuration::CALIBRATED_TIMEOUT_FLOOR}s (default: #{MutationTester::Configuration::DEFAULT_TIMEOUT_FACTOR}; ignored when config.timeout is set explicitly, which keeps a fixed budget)") do |n|
     options[:timeout_factor] = n
   end
@@ -184,6 +188,7 @@ apply_configuration = lambda do
     config.worker_env_var = options[:worker_env] if options.key?(:worker_env)
     config.after_fork_file = options[:after_fork] if options.key?(:after_fork)
     config.fail_fast = options.fetch(:fail_fast, false)
+    config.kill_matrix = true if options[:kill_matrix]
     config.mutation_types[:strict_equality] = true if options[:strict_equality]
 
     if json_mode
@@ -206,6 +211,11 @@ run_batch_machine = lambda do |batch, passed_for|
   reporter = MutationTester::Reporters::BatchJsonReporter.new(result, MutationTester.configuration, passed: passed)
   real_stdout.puts reporter.render
   exit(passed ? 0 : 1)
+end
+
+if options[:kill_matrix] && options[:fail_fast]
+  usage_error.call('--kill-matrix cannot be combined with --fail-fast.',
+                   '--fail-fast stops the run at the first surviving mutant, which would leave the kill matrix incomplete; drop one of the two flags.')
 end
 
 if options[:since] && !glob_mode
@@ -360,7 +370,7 @@ if json_mode
   end
 
   reporter = MutationTester::Reporters::JsonReporter.new(
-    core.results, core.source_file, core.spec_file, core.config, interrupted: core.interrupted?
+    core.results, core.source_file, core.spec_file, core.config, interrupted: core.interrupted?, tests: core.tests
   )
 
   unless core.results.empty?

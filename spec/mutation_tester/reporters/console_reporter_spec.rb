@@ -177,6 +177,18 @@ RSpec.describe MutationTester::Reporters::ConsoleReporter do
         end
       end
 
+      context 'when the kill matrix mode disabled test selection for the run' do
+        let(:config) do
+          MutationTester::Configuration.new.tap { |c| c.kill_matrix = true }
+        end
+
+        it 'does not print the selection line' do
+          output = capture_stdout { reporter.generate }
+
+          expect(output).not_to include('Selection:')
+        end
+      end
+
       context 'when the test file is minitest' do
         let(:reporter) { described_class.new(results, 'lib/foo.rb', 'test/foo_test.rb', config) }
 

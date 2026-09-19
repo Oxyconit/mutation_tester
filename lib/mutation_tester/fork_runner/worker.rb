@@ -12,9 +12,11 @@ framework = ARGV.shift == 'minitest' ? :minitest : :rspec
 if framework == :minitest
   require 'minitest'
   require_relative '../minitest_fail_fast'
+  require_relative '../test_recorder/minitest_hook'
   Minitest.class_variable_set(:@@installed_at_exit, true)
 else
   require 'rspec/core'
+  require_relative '../test_recorder/rspec_hook'
 end
 
 kill_group = lambda do |pid|
