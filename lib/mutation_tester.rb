@@ -5,6 +5,7 @@ require 'rainbow'
 require 'fileutils'
 require 'erb'
 require 'json'
+require 'io/console'
 
 require_relative 'mutation_tester/version'
 require_relative 'mutation_tester/configuration'

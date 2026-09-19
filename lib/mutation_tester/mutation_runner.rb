@@ -86,7 +86,7 @@ module MutationTester
           end
 
           result = run_single_mutation(mutation, :in_memory)
-          progress_callback.call(mutation, index + 1) if progress_callback
+          progress_callback.call(mutation, index + 1, result) if progress_callback
           results << result
           break if stop_early?(result)
         end
@@ -113,20 +113,10 @@ module MutationTester
 
       warn "[MutationTester] In-memory execution selected (parallel, #{pool.size} preloaded workers, zero file writes per mutant)."
       announce_load_time_routing(mutations)
-      total = mutations.size
-      completed_count = 0
       collected = []
       project_root = discoverable_project_root
       reserve_fallback_shadow_root
-
-      report_progress = lambda do |_item, _index, result|
-        completed_count += 1
-        collected << result
-        if progress_callback && (completed_count.even? || completed_count == total)
-          progress_callback.call(nil, completed_count)
-        end
-        raise Parallel::Break if stop_early?(result)
-      end
+      report_progress = parallel_progress_reporter(collected, progress_callback)
 
       mapped = with_parallel_interrupt_silenced do
         Parallel.map(mutations, in_processes: pool.size, finish: report_progress) do |mutation|
@@ -141,21 +131,11 @@ module MutationTester
     end
 
     def run_in_shadow_parallel(mutations, &progress_callback)
-      total = mutations.size
-      completed_count = 0
       collected = []
       project_root = find_project_root
       shadow_run_root
-      prepare_worker_preloads(total)
-
-      report_progress = lambda do |_item, _index, result|
-        completed_count += 1
-        collected << result
-        if progress_callback && (completed_count.even? || completed_count == total)
-          progress_callback.call(nil, completed_count)
-        end
-        raise Parallel::Break if stop_early?(result)
-      end
+      prepare_worker_preloads(mutations.size)
+      report_progress = parallel_progress_reporter(collected, progress_callback)
 
       mapped = with_parallel_interrupt_silenced do
         Parallel.map(mutations, in_processes: @config.parallel_processes, finish: report_progress) do |mutation|
@@ -180,7 +160,7 @@ module MutationTester
       results = []
       mutations.each_with_index do |mutation, index|
         result = run_single_mutation(mutation, :shadow, project_root)
-        progress_callback.call(mutation, index + 1) if progress_callback
+        progress_callback.call(mutation, index + 1, result) if progress_callback
         results << result
         break if stop_early?(result)
       end
@@ -194,7 +174,7 @@ module MutationTester
       results = []
       mutations.each_with_index do |mutation, index|
         result = run_single_mutation(mutation, :in_place)
-        progress_callback.call(mutation, index + 1) if progress_callback
+        progress_callback.call(mutation, index + 1, result) if progress_callback
         results << result
         break if stop_early?(result)
       end
@@ -488,8 +468,8 @@ module MutationTester
 
     def fall_back_to_file_based(reason, mutations, completed: 0, &progress_callback)
       announce_file_based_fallback(reason)
-      offset_callback = progress_callback && lambda do |mutation, index|
-        progress_callback.call(mutation, completed + index)
+      offset_callback = progress_callback && lambda do |mutation, index, result|
+        progress_callback.call(mutation, completed + index, result)
       end
       run_file_based_series(mutations, &offset_callback)
     end
@@ -622,6 +602,16 @@ module MutationTester
 
     def stop_early?(result)
       @config.fail_fast && result[:status] == :survived
+    end
+
+    def parallel_progress_reporter(collected, progress_callback)
+      completed_count = 0
+      lambda do |_item, _index, result|
+        completed_count += 1
+        collected << result
+        progress_callback.call(nil, completed_count, result) if progress_callback
+        raise Parallel::Break if stop_early?(result)
+      end
     end
 
     def backup_path

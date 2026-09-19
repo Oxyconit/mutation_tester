@@ -184,11 +184,14 @@ module MutationTester
 
       progress_display = ProgressDisplay.new(@mutations.size, @config)
 
-      @results = mutation_runner.run(@mutations) do |mutation, index|
-        progress_display.update(mutation, index)
+      begin
+        @results = mutation_runner.run(@mutations) do |_mutation, index, result|
+          progress_display.update(index, result)
+        end
+        progress_display.finish
+      ensure
+        progress_display.stop
       end
-
-      progress_display.finish
       puts Rainbow("✓ Completed #{@results.size} mutations").green
     end
 
