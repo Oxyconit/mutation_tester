@@ -93,6 +93,11 @@ RSpec.describe 'Ground-truth pricer detection parity benchmark' do
       offending = @results.reject { |r| %i[killed timeout].include?(r[:status]) }
       expect(offending.map { |r| r.slice(:status, :type, :line, :description) }).to be_empty
     end
+
+    it 'generates and kills the range boundary swap and both hash pair removals' do
+      killed = @results.select { |r| r[:status] == :killed }.map { |r| r[:description] }
+      expect(killed).to include('Change .. to ...', 'Remove pair total from merge', 'Remove pair count from merge')
+    end
   end
 
   context 'with the in-memory runner' do

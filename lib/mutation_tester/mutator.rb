@@ -41,6 +41,10 @@ module MutationTester
 
     NON_MUTABLE_ARGUMENT_TYPES = %i[block_pass splat kwsplat].freeze
 
+    HASH_NODE_TYPES = %i[hash kwargs].freeze
+
+    RANGE_OPERATOR_SWAPS = { irange: '...', erange: '..' }.freeze
+
     DISABLE_ANNOTATION = /mutation_tester:disable\b/.freeze
 
     def self.disabled_lines(content)
@@ -144,6 +148,8 @@ module MutationTester
         mutations += mutate_logical_and(ast) if enabled?(:logical)
       when :or
         mutations += mutate_logical_or(ast) if enabled?(:logical)
+      when :irange, :erange
+        mutations += mutate_range_node(ast) if enabled?(:comparison)
       end
 
       mutations.each do |mutation|
@@ -282,7 +288,9 @@ module MutationTester
       return [] unless PLAIN_METHOD_NAME.match?(method_name.to_s)
       return [] if REQUIRE_METHODS.include?(method_name)
 
-      build_last_argument_removal(node, arguments) + build_argument_nil_mutations(node, arguments)
+      build_last_argument_removal(node, arguments) +
+        build_argument_nil_mutations(node, arguments) +
+        build_pair_removal_mutations(node, arguments)
     rescue => e
       warn_skipped(:argument, node, e)
       []
@@ -326,6 +334,59 @@ module MutationTester
           "Replace argument #{source_slice(expression.begin_pos, expression.end_pos)} with nil"
         )
       end
+    end
+
+    def build_pair_removal_mutations(node, arguments)
+      arguments.flat_map do |argument|
+        next [] unless HASH_NODE_TYPES.include?(argument.type)
+        next [] if contains_heredoc?(argument)
+
+        build_hash_pair_removals(node, argument)
+      end
+    end
+
+    def build_hash_pair_removals(node, hash)
+      return [] unless mutable_argument?(hash)
+
+      pairs = hash.children
+      nested = pairs.flat_map do |pair|
+        value = pair.children[1]
+        value.type == :hash ? build_hash_pair_removals(node, value) : []
+      end
+
+      pairs.each_index.filter_map { |index| build_pair_removal(node, hash, index) } + nested
+    end
+
+    def build_pair_removal(node, hash, index)
+      range_begin, range_end = pair_removal_range(hash, index)
+      return nil unless range_begin
+
+      key = hash.children[index].children[0].loc.expression
+      build_argument_mutation(
+        node, range_begin, range_end, '',
+        "Remove pair #{source_slice(key.begin_pos, key.end_pos)} from #{node.children[1]}"
+      )
+    end
+
+    def pair_removal_range(hash, index)
+      pairs = hash.children
+      pair = pairs[index].loc.expression
+
+      if pairs.size == 1
+        return nil unless hash.loc.begin
+
+        [hash.loc.begin.end_pos, hash.loc.end.begin_pos]
+      elsif index < pairs.size - 1
+        [pair.begin_pos, pairs[index + 1].loc.expression.begin_pos]
+      else
+        [pairs[index - 1].loc.expression.end_pos, pair.end_pos]
+      end
+    end
+
+    def contains_heredoc?(node)
+      return false unless node.is_a?(Parser::AST::Node)
+
+      heredoc_node?(node) || node.children.any? { |child| contains_heredoc?(child) }
     end
 
     def build_argument_mutation(node, range_begin, range_end, replacement, description)
@@ -668,6 +729,35 @@ module MutationTester
     rescue => e
       warn_skipped(:conditional, node, e)
       []
+    end
+
+    def mutate_range_node(node)
+      upper_bound = node.children[1]
+      return [] if upper_bound.nil? || infinity_constant?(upper_bound)
+
+      operator = node.loc.operator
+      replacement = RANGE_OPERATOR_SWAPS.fetch(node.type)
+      mutated_code = splice_source(operator.begin_pos, operator.end_pos, replacement)
+      return [] unless parses_cleanly?(mutated_code)
+
+      [{
+        id: next_mutation_id,
+        type: :comparison,
+        line: operator.line,
+        original: operator.source,
+        mutated: replacement,
+        code: mutated_code,
+        source_line: extract_source_line(operator.line),
+        mutated_line: extract_mutated_line(mutated_code, operator.line),
+        description: "Change #{operator.source} to #{replacement}"
+      }]
+    rescue => e
+      warn_skipped(:comparison, node, e)
+      []
+    end
+
+    def infinity_constant?(node)
+      node.type == :const && node.children[1] == :INFINITY
     end
 
     def parses_cleanly?(code)

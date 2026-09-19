@@ -36,6 +36,12 @@ mutating them mostly yields always-killed `NoMethodError` garbage rather than a 
 - `==` → `!=`, `>`, `<`
 - `!=` → `==`, `>`, `<`
 - `<=>` → `==`
+- Range boundary: `a..b` → `a...b` and `a...b` → `a..b`, the range form of `<=` versus `<` on the upper bound. Only a
+  test that uses the upper bound itself (the last element, the last character kept by `text[0...limit]`) kills it. An
+  endless range (`1..`, `text[1..]`) and a range ending at `Float::INFINITY` are left alone, because both forms hold the
+  same values there; beginless ranges (`..5`) are mutated, and flip-flops are not ranges and are untouched. Reported with
+  `type: comparison`, `original` and `mutated` being the two operators (e.g. `Change .. to ...`). Numeric literal bounds
+  still get their own `number` mutants.
 
 ## Strict Equality Mutations (opt-in)
 
@@ -130,6 +136,17 @@ mutating them mostly yields always-killed `NoMethodError` garbage rather than a 
   unless the argument is already the `nil` literal. A test that never verifies the effect of an argument (say, an
   exception message asserted only by class, or a constructor field no spec reads) lets these mutants survive even when
   the argument is not a literal.
+- Removes one pair of a hash passed as a call argument, each pair in its own mutant: keyword options
+  (`validates :role, presence: true, inclusion: ROLES` → `validates :role, inclusion: ROLES` and
+  `validates :role, presence: true`), braced hashes, and option hashes nested as a pair value
+  (`uniqueness: { scope: :account_id, case_sensitive: false }` → `uniqueness: { case_sensitive: false }`). Unlike
+  removing or nil-ing the whole argument, the call usually still loads and runs, so only a test that checks that one
+  option kills the mutant. A braced hash with a single pair becomes `{}`; a lone brace-free keyword (`m(a, k: 1)`) is
+  left to the last-argument removal, which produces the same code. Hashes that carry a double splat or hold a heredoc,
+  and hash literals that are not call arguments (`PRICES = { ... }`), are not touched. Reported with the description
+  `Remove pair <key> from <method>`. As with last-argument removal, a pair that only repeats the callee's own default
+  (`notify(user, async: false)` when `async` already defaults to `false`) yields a mutant no test can kill; annotate
+  such a line with `# mutation_tester:disable`.
 - Exclusions: operator sends (`+`, `==`, `[]`, `[]=`, `<<`, setters, ...), require-like calls (`require`,
   `require_relative`, `load`, `autoload`), block-pass arguments (`&blk`), splats (`*args`), double splats (`**opts`),
   and safe-navigation calls are not mutated by this family. A candidate whose code would no longer parse is dropped at
