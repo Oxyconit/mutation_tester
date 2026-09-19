@@ -20,10 +20,16 @@ module MutationTester
         def flush
           return unless TestRecorder.active?
 
-          TestRecorder.write(::RSpec.world.all_examples.filter_map { |example| entry_for(example) })
+          TestRecorder.write(all_examples.filter_map { |example| entry_for(example) })
+        rescue StandardError => e
+          Kernel.warn "[MutationTester] The kill matrix could not record the rspec results: #{e.class}: #{e.message}"
         end
 
         private
+
+        def all_examples
+          ::RSpec.world.example_groups.flat_map(&:descendants).flat_map(&:examples)
+        end
 
         def entry_for(example)
           status = STATUSES[example.execution_result.status]
@@ -31,15 +37,22 @@ module MutationTester
 
           metadata = example.metadata
           {
-            id: "#{spec_path(metadata)}[#{metadata[:scoped_id]}]",
+            id: id_for(metadata),
             name: example.full_description,
-            line: metadata[:file_path] == metadata[:rerun_file_path] ? metadata[:line_number] : nil,
+            line: metadata[:file_path] == rerun_path(metadata) ? metadata[:line_number] : nil,
             status: status
           }
         end
 
-        def spec_path(metadata)
-          TestRecorder.relative_to_root(File.expand_path(metadata[:rerun_file_path]))
+        def id_for(metadata)
+          path = TestRecorder.relative_to_root(File.expand_path(rerun_path(metadata)))
+          return "#{path}[#{metadata[:scoped_id]}]" if metadata[:scoped_id]
+
+          "#{path}:#{metadata[:line_number]}"
+        end
+
+        def rerun_path(metadata)
+          metadata[:rerun_file_path] || metadata[:file_path]
         end
       end
     end

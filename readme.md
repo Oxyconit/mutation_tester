@@ -785,7 +785,8 @@ works the same for RSpec and Minitest and on all three runners:
 - `mutations[].killed_by` lists the `id` of every test that failed under that mutant.
 
 Test ids are `TestClass#test_name` for Minitest and `spec/calculator_spec.rb[1:2:1]` for RSpec, which you can pass
-straight to `rspec` from the project root to run that one example.
+straight to `rspec` from the project root to run that one example (RSpec older than 3.3 has no such ids and gets
+`spec/calculator_spec.rb:12`, file and line, instead).
 
 The analysis itself is a short `jq` program over the report. Both recipes work on a single-file report and on the
 multi-file envelope.
