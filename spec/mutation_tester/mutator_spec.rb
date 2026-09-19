@@ -906,6 +906,7 @@ RSpec.describe MutationTester::Mutator, '(tables and switches)' do
       expect(range_swaps("x = (1..)\n")).to be_empty
       expect(range_swaps("text[1..]\n")).to be_empty
       expect(range_swaps("x = (1..nil)\n")).to be_empty
+      expect(range_swaps("y = x[1..nil]\nz = x[1...nil]\n")).to be_empty
     end
 
     it 'leaves a range ending at infinity alone because the bound can never be reached' do
