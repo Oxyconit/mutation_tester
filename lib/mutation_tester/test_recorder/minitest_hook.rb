@@ -1,12 +1,9 @@
 # frozen_string_literal: true
 
 require_relative '../test_recorder'
+require_relative '../minitest_load_hook'
 
-begin
-  require 'minitest'
-rescue LoadError
-  Kernel.warn '[MutationTester] minitest is not loadable here; the kill matrix cannot record which tests fail.'
-else
+MutationTester::MinitestLoadHook.on_load do
   module MutationTester
     module TestRecorder
       module MinitestHook
