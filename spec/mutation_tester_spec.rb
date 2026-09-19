@@ -1076,3 +1076,44 @@ RSpec.describe 'MutationTester::Core#interrupted?' do
     expect(core.stopped_on_survivor?).to be false
   end
 end
+
+RSpec.describe 'MutationTester::Core#run_mutations progress line shutdown' do
+  def core_with_failing_runner(io, error)
+    dir = Dir.mktmpdir
+    source = File.join(dir, 'src.rb')
+    spec = File.join(dir, 'src_spec.rb')
+    File.write(source, "x = 1\n")
+    File.write(spec, '')
+    config = MutationTester::Configuration.new
+    config.show_progress = true
+    core = MutationTester::Core.new(source, spec, config)
+    core.instance_variable_set(:@mutations, [{}, {}])
+    runner = instance_double(MutationTester::MutationRunner)
+    allow(runner).to receive(:run).and_raise(error)
+    allow(core).to receive(:mutation_runner).and_return(runner)
+    allow(MutationTester::ProgressDisplay).to receive(:new).and_wrap_original do |original, total, cfg|
+      original.call(total, cfg, output_stream: io)
+    end
+    core
+  end
+
+  it 'stops the spinner thread and claims no completion when the run is interrupted' do
+    io = StringIO.new
+    core = core_with_failing_runner(io, Interrupt)
+    threads_before = Thread.list
+
+    expect { capture_stdout { core.send(:run_mutations) } }.to raise_error(Interrupt)
+
+    expect(Thread.list - threads_before).to be_empty
+    expect(io.string).not_to include('Completed in')
+    expect(io.string).to end_with("\r")
+  end
+
+  def capture_stdout
+    original = $stdout
+    $stdout = StringIO.new
+    yield
+  ensure
+    $stdout = original
+  end
+end

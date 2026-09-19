@@ -304,7 +304,7 @@ expected path printed.
 | `--reporters LIST` | Comma-separated reporters to run: `console`, `html`, `json` (default: all three). An unknown name errors and exits 1. |
 | `--output-dir PATH` | Directory for the generated report files (default: `tmp/mutation_reports`). In batch mode each file writes to its own subdirectory. |
 | `--verbose` | Show a per-mutation warning for every skipped mutation (quiet by default; the "Generated N mutations, skipped M" summary always prints when mutants are dropped). |
-| `--no-progress` | Disable the live progress line (percentage, processed count, elapsed time, estimated remaining time, survived and timed out tallies). |
+| `--no-progress` | Disable the live progress line (percentage, processed count, elapsed time, estimated remaining time, survived and timed out tallies, and an errored tally once a mutant errors). |
 | `-h, --help` | Show help message. |
 | `-v, --version` | Show version. |
 
