@@ -89,6 +89,7 @@ module MutationTester
 
       def selection_stats_available?
         return false unless @config.test_selection && FrameworkDetector.detect(@spec_file) == :rspec
+        return false if @config.kill_matrix
 
         @config.runner != :in_memory || @results.any? { |result| result.key?(:kill_phase) }
       end

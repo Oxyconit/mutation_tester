@@ -21,6 +21,7 @@ module MutationTester
         {
           schema_version: SCHEMA_VERSION,
           interrupted: interrupted?,
+          **kill_matrix_fields,
           metadata: {
             version: MutationTester::VERSION,
             generated_at: Time.now.iso8601,
@@ -46,6 +47,12 @@ module MutationTester
       end
 
       private
+
+      def kill_matrix_fields
+        return {} unless @config.kill_matrix
+
+        { kill_matrix: true, tests: @tests.map { |test| test.slice(:id, :name, :line, :status) } }
+      end
 
       def mutation_entry(result)
         status = status_of(result)

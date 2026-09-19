@@ -22,7 +22,7 @@ module MutationTester
 
     SKIP_ORDER = %i[missing not_ruby test_file no_spec].freeze
 
-    ProcessedEntry = Struct.new(:source_file, :spec_file, :score, :passed, :output_dir, :results, :interrupted, :degraded, keyword_init: true) do
+    ProcessedEntry = Struct.new(:source_file, :spec_file, :score, :passed, :output_dir, :results, :interrupted, :degraded, :tests, keyword_init: true) do
       def passed?
         passed
       end
@@ -230,7 +230,8 @@ module MutationTester
         output_dir: file_config.output_dir,
         results: core.results,
         interrupted: core.interrupted?,
-        degraded: core.infrastructure_failure?
+        degraded: core.infrastructure_failure?,
+        tests: core.tests
       )
       [entry, core.stopped_on_survivor?]
     end

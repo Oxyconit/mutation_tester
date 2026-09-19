@@ -92,11 +92,31 @@ Every mutant run stops as soon as one test fails, on all three runners:
   non-passing result. On `spawn` the file is preloaded with `ruby -r`, on the
   preloaded runners the worker enables the same reporter per job.
 
+Neither preload loads Minitest itself. Each one waits until the test file has
+loaded Minitest and only then registers its plugin, and the fork worker sets its
+autorun guard the same way. The test file therefore still chooses the Minitest
+version: a project without a Gemfile that pins `gem 'minitest', '~> 5.0'` at the
+top of its test file keeps working when a newer Minitest is installed. Loading
+Minitest first would activate the newest installed version, the pin would then
+raise `Gem::LoadError`, and every mutant run would end in that load error and be
+counted as killed.
+
 This cannot change a verdict. A run that stops early has already recorded a
 failure, which is exactly what makes a mutant killed, and a run without a failure
 is untouched and executes every test. Only the mutant runs opt in: the baseline
 run and the shadow-workspace sanity check are expected to pass and always run the
 whole file, so a failing baseline still reports every failure it finds.
+
+The opt-in kill matrix (`--kill-matrix`, `config.kill_matrix = true`) turns the
+early stop off for mutant runs too, on all three runners, because it has to
+record every failing test of every mutant. A small recorder is loaded next to the
+test file (`--require` for RSpec and `ruby -r` for Minitest on `spawn`, at worker
+boot on the preloaded runners) and appends the failing test ids to a per-run
+temporary file named through the environment. The ids deliberately do not travel
+through the fork worker's result pipe: the parent reads that pipe only after the
+child has finished, so a list larger than the pipe buffer would block the child
+until the deadline and turn a kill into a timeout. See
+[Finding redundant tests](../readme.md#finding-redundant-tests).
 
 The pathological case it removes is a mutant that breaks something every test
 touches (a class body that no longer loads, a constant every test reads). Such a
@@ -199,6 +219,9 @@ and spawn); selection only changes how fast killed mutants die. The in-memory
 runner (the default path) performs no selection at all: every mutant runs the
 full preloaded example set, which is why its report omits the `Selection:`
 summary line (see the in-memory limitations above).
+
+The kill matrix mode (`--kill-matrix`) turns selection off for the run, because a
+subset run would under-report the tests that kill a mutant.
 
 Disable it with the `--no-test-selection` CLI flag or in Ruby:
 

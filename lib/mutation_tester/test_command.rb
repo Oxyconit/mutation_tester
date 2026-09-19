@@ -1,8 +1,9 @@
 require 'tempfile'
+require_relative 'test_recorder'
 
 module MutationTester
   class TestCommand
-    Result = Struct.new(:passed, :timed_out, :output) do
+    Result = Struct.new(:passed, :timed_out, :output, :tests) do
       alias_method :passed?, :passed
       alias_method :timed_out?, :timed_out
     end
@@ -13,7 +14,7 @@ module MutationTester
     attr_reader :spec_file, :framework, :use_bundle_exec, :example_filters
 
     def initialize(spec_file, use_bundle_exec:, framework: nil, runner: :spawn, example_filters: [], worker_env_var: nil,
-                   stop_on_first_failure: false)
+                   stop_on_first_failure: false, record: nil, record_root: nil)
       @spec_file = spec_file
       @framework = framework || self.class.detect_framework(spec_file)
       @use_bundle_exec = use_bundle_exec
@@ -21,10 +22,12 @@ module MutationTester
       @example_filters = @framework == :rspec ? Array(example_filters) : []
       @worker_env_var = worker_env_var
       @stop_on_first_failure = stop_on_first_failure
+      @record = record
+      @record_root = record_root
     end
 
     def argv
-      parts = [runner, *interpreter_args, spec_file, *filter_args, *fail_fast_args]
+      parts = [runner, *interpreter_args, spec_file, *filter_args, *fail_fast_args, *recorder_args]
       @use_bundle_exec ? ['bundle', 'exec', *parts] : parts
     end
 
@@ -41,29 +44,13 @@ module MutationTester
     end
 
     def run(timeout: nil, chdir: nil, capture: false, mirror_of: nil)
-      if fork_execution?
-        fork_runner = ForkRunner.acquire(use_bundle_exec: @use_bundle_exec, framework: @framework)
-        if fork_runner
-          return fork_runner.execute(
-            spec_file,
-            timeout: timeout,
-            chdir: chdir || Dir.pwd,
-            capture: capture,
-            args: filter_args,
-            stop_on_first_failure: @stop_on_first_failure,
-            mirror_of: mirror_of,
-            env: worker_env_overrides
-          )
-        end
+      return execute(timeout: timeout, chdir: chdir, capture: capture, mirror_of: mirror_of) unless @record
+
+      result, tests = TestRecorder.capture(scope: @record, root: mirror_of ? chdir : @record_root) do |recorder_env|
+        execute(timeout: timeout, chdir: chdir, capture: capture, mirror_of: mirror_of, recorder_env: recorder_env)
       end
-
-      return run_captured(timeout: timeout, chdir: chdir) if capture
-
-      spawn_options = { pgroup: true, %i[out err] => File::NULL }
-      spawn_options[:chdir] = chdir if chdir
-
-      pid = Process.spawn(*spawn_argv, spawn_options)
-      wait_with_deadline(pid, timeout)
+      result.tests = tests
+      result
     end
 
     def fork_execution?
@@ -93,9 +80,42 @@ module MutationTester
 
     private
 
-    def spawn_argv
+    def execute(timeout:, chdir:, capture:, mirror_of:, recorder_env: nil)
+      env = child_env(recorder_env)
+      if fork_execution?
+        fork_runner = ForkRunner.acquire(use_bundle_exec: @use_bundle_exec, framework: @framework)
+        if fork_runner
+          return fork_runner.execute(
+            spec_file,
+            timeout: timeout,
+            chdir: chdir || Dir.pwd,
+            capture: capture,
+            args: filter_args,
+            stop_on_first_failure: @stop_on_first_failure,
+            mirror_of: mirror_of,
+            env: env
+          )
+        end
+      end
+
+      return run_captured(timeout: timeout, chdir: chdir, env: env) if capture
+
+      spawn_options = { pgroup: true, %i[out err] => File::NULL }
+      spawn_options[:chdir] = chdir if chdir
+
+      pid = Process.spawn(*spawn_argv(env), spawn_options)
+      wait_with_deadline(pid, timeout)
+    end
+
+    def spawn_argv(env)
+      env ? [env, *argv] : argv
+    end
+
+    def child_env(recorder_env)
       overrides = worker_env_overrides
-      overrides ? [overrides, *argv] : argv
+      return overrides unless recorder_env
+
+      (overrides || {}).merge(recorder_env)
     end
 
     def worker_env_overrides
@@ -114,9 +134,18 @@ module MutationTester
     end
 
     def interpreter_args
-      return [] unless @stop_on_first_failure && @framework == :minitest
+      return [] unless @framework == :minitest
 
-      ['-r', MINITEST_FAIL_FAST_PATH]
+      args = []
+      args += ['-r', MINITEST_FAIL_FAST_PATH] if @stop_on_first_failure
+      args += ['-r', TestRecorder::MINITEST_HOOK_PATH] if @record
+      args
+    end
+
+    def recorder_args
+      return [] unless @record && @framework == :rspec
+
+      ['--require', TestRecorder::RSPEC_HOOK_PATH]
     end
 
     def fail_fast_args
@@ -125,12 +154,12 @@ module MutationTester
       ['--fail-fast']
     end
 
-    def run_captured(timeout:, chdir:)
+    def run_captured(timeout:, chdir:, env:)
       log = Tempfile.new(['mutation_tester_baseline', '.log'])
       spawn_options = { pgroup: true, %i[out err] => log.path }
       spawn_options[:chdir] = chdir if chdir
 
-      pid = Process.spawn(*spawn_argv, spawn_options)
+      pid = Process.spawn(*spawn_argv(env), spawn_options)
       result = wait_with_deadline(pid, timeout)
       result.output = File.read(log.path)
       result

@@ -55,6 +55,7 @@ interruption line (no backtrace), and exits with status 130.
 - [Mutation types](#mutation-types)
 - [Equivalent mutants](#equivalent-mutants)
 - [Reports and output](#reports-and-output)
+- [Finding redundant tests](#finding-redundant-tests)
 - [Pre-push hook](#pre-push-hook)
 - [CI/CD integration](#cicd-integration)
 - [Troubleshooting](#troubleshooting)
@@ -294,6 +295,7 @@ expected path printed.
 | `--spec-map RULE` | Spec-mapping regex rule `'PATTERN=>REPLACEMENT'`; repeatable, first match wins. See [Mapping sources to specs](#mapping-sources-to-specs). |
 | `--minimum-score N` | Mutation score percentage a file must reach to pass (default: 80). Drives the `PASS`/`FAIL` verdict and the exit code. |
 | `--fail-fast` | Stop the run at the first surviving mutant and finish with a failing status. |
+| `--kill-matrix` | Audit mode: run every mutant against the full test file and record which tests kill it (`mutations[].killed_by`, `tests[]`). Slower; cannot be combined with `--fail-fast`. See [Finding redundant tests](#finding-redundant-tests). |
 | `--timeout-factor N` | Per-mutant timeout budget as `N` times the measured baseline test run, never below 5 s (default: 5, must be > 0). Ignored when `config.timeout` is set explicitly. |
 | `--timeout-policy MODE` | Scoring policy for timed-out mutants: `killed` (default) counts a timeout as a kill; `separate` keeps timeouts out of the score and reports them as their own category. |
 | `--worker-env NAME` | Per-worker database isolation via the `parallel_tests` `TEST_ENV_NUMBER` convention. See [Making parallelism work with Rails](#making-parallelism-work-with-rails). |
@@ -403,6 +405,11 @@ MutationTester.configure do |config|
   # subset, always confirmed by the full file before a mutant is reported as
   # survived. Set to false to always run the full file. See Execution model.
   config.test_selection = true
+
+  # Kill matrix (audit mode): run every mutant against the full test file and
+  # record in the JSON report which tests kill it. Slower than a normal run.
+  # Equivalent to the --kill-matrix CLI flag. See Finding redundant tests.
+  config.kill_matrix = false
 
   # Hard deadline for the single baseline run of the whole suite (seconds).
   # Runs every example once, so it is looser than the per-mutant timeout above.
@@ -622,6 +629,9 @@ reads). Such a mutant used to pay the full test file once per mutant, which on a
 per-mutant deadline and turn a decided kill into a reported timeout. The baseline run and the shadow sanity check are
 unaffected: they are expected to pass, and a passing run runs every test.
 
+The one exception is the opt-in `--kill-matrix` audit mode, which needs every failing test of every mutant and
+therefore runs the full test file each time. See [Finding redundant tests](#finding-redundant-tests).
+
 ### Test selection (fast kill with full-file confirmation)
 
 For RSpec suites on the file-based runners, MutationTester runs each mutant in two phases: it first runs only the
@@ -751,6 +761,79 @@ gap: the worklist you can hand to an AI agent or a CI gate (see [CI/CD integrati
 Full field-by-field documentation of both shapes (the single-file report and the multi-file envelope), the
 `schema_version` policy, and ready-to-use `jq` recipes live in [docs/json-schema.md](docs/json-schema.md).
 
+## Finding redundant tests
+
+Mutation testing normally answers "which behavior is untested?". The opt-in **kill matrix** answers the opposite
+question: "which tests could I delete without losing any protection?". A test is a redundancy candidate when removing
+it leaves the set of killed mutants unchanged.
+
+```bash
+# One file
+bundle exec mutation_test --kill-matrix --json lib/calculator.rb > kill_matrix.json
+
+# A whole directory (one aggregate JSON document)
+bundle exec mutation_test --kill-matrix --json --glob 'lib/**/*.rb' > kill_matrix.json
+```
+
+`--kill-matrix` (or `config.kill_matrix = true`) changes how every mutant is run and what the JSON report contains. It
+works the same for RSpec and Minitest and on all three runners:
+
+- Every mutant runs the **full** test file. The run does not stop at the first failing test and RSpec test selection
+  is off, because a run that stops early would name only one of the killers.
+- `tests[]` lists every test of the unmutated baseline run (`id`, `name`, `line`, `status`), so a test that kills
+  nothing is still visible.
+- `mutations[].killed_by` lists the `id` of every test that failed under that mutant.
+
+Test ids are `TestClass#test_name` for Minitest and `spec/calculator_spec.rb[1:2:1]` for RSpec, which you can pass
+straight to `rspec` from the project root to run that one example (RSpec older than 3.3 has no such ids and gets
+`spec/calculator_spec.rb:12`, file and line, instead).
+
+The analysis itself is a short `jq` program over the report. Both recipes work on a single-file report and on the
+multi-file envelope.
+
+```bash
+# 1. Tests that kill no mutant at all
+jq -r '(.files // [.])[]
+  | [.mutations[].killed_by[]] as $killers
+  | .tests[] | select(.status == "passed" and (.id | IN($killers[]) | not))
+  | "\(.id)\t\(.name)"' kill_matrix.json
+
+# 2. Tests whose every kill is shared: each mutant they kill is also killed by another test
+jq -r '(.files // [.])[]
+  | [.mutations[] | select(.status == "killed") | .killed_by] as $kills
+  | .tests[] | .id as $id
+  | [$kills[] | select(index($id))] as $mine
+  | select(($mine | length) > 0 and all($mine[]; length > 1))
+  | "\(.id)\t\(.name)"' kill_matrix.json
+
+# 3. Mutants whose killers are unknown (read the results with care when this is not 0)
+jq '[(.files // [.])[] | .mutations[]
+  | select((.status == "killed" or .status == "timeout") and (.killed_by | length) == 0)] | length' kill_matrix.json
+```
+
+Read the lists as candidates to review, not as a delete list:
+
+- **Remove one test at a time and re-run.** Two tests from list 2 can cover for each other: each one is redundant
+  while the other exists, but deleting both lets their mutants survive.
+- The result is relative to **one source file and the enabled mutation types**. A test that kills nothing here may
+  protect another file, or behavior no mutation operator changes (for example the exact wording of a message when the
+  `string` mutations are disabled).
+- A `timeout` mutant always has an empty `killed_by`, and so does a `killed` mutant that failed without any test
+  failing (typically the mutated file no longer loads). Their killers are unknown, so a test must never be called
+  redundant because of them. Recipe 3 counts them; a higher `--timeout-factor` usually turns timeouts into real kills.
+- A skipped test has `"status": "skipped"` in `tests[]` and is left out of the recipes.
+- If the baseline passes but not a single test could be recorded (the test file defines no tests, or a plugin replaces
+  the framework's reporters), the run stops with an error instead of reporting an empty matrix.
+
+The mode is an occasional audit, not a gate. Without the early stop a mutant that breaks something every test touches
+pays for the whole test file, so expect a slower run and consider `--timeout-factor 10`. It cannot be combined with
+`--fail-fast` (or `config.fail_fast`), which would stop the run at the first surviving mutant and leave the matrix
+incomplete: the CLI rejects the pair as a usage error and a run configured from Ruby or rake fails before the baseline.
+
+For a scheduled CI job that publishes the candidates, see
+[`examples/github_actions/redundant_tests.yml`](examples/github_actions/redundant_tests.yml) and
+[docs/ci.md](docs/ci.md#redundant-test-audit-scheduled-job).
+
 ## Pre-push hook
 
 Gate your pushes locally: run mutation testing on the file(s) you touched and block the push when the score is under
@@ -801,6 +884,9 @@ The gem ships ready-to-copy GitHub Actions workflows (installed alongside the ge
 - [`examples/github_actions/ai_mutation_gate.yml`](examples/github_actions/ai_mutation_gate.yml) is the AI gate: the
   same pass/fail gate, plus it writes the surviving-mutant worklist to the GitHub job summary and uploads
   `survivors.json` for an agent to turn into missing tests.
+- [`examples/github_actions/redundant_tests.yml`](examples/github_actions/redundant_tests.yml) is a scheduled audit,
+  not a gate: it runs `--kill-matrix` and lists the tests that kill no mutant, or no mutant of their own, in the job
+  summary. See [Finding redundant tests](#finding-redundant-tests).
 
 See [docs/ci.md](docs/ci.md) for the full recipes: a 5-minute setup, minimal inline and pull-request workflows, machine
 mode as a gate and artifact, and the AI workflow.

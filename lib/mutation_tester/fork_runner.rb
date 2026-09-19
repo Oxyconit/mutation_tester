@@ -190,8 +190,8 @@ module MutationTester
       [false, 'the fork runner worker terminated unexpectedly']
     end
 
-    def execute_in_memory(source:, path:, timeout: nil, chdir: nil)
-      job = { in_memory: { source: source, path: path }, timeout: timeout, chdir: chdir }
+    def execute_in_memory(source:, path:, timeout: nil, chdir: nil, env: nil)
+      job = { in_memory: { source: source, path: path }, timeout: timeout, chdir: chdir, env: env }
       @job_writer.puts(JSON.generate(job))
       event = await_result(timeout)
       InMemoryOutcome.new(event['status'], event['message'])

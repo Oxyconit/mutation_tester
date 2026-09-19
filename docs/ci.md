@@ -23,6 +23,9 @@ It also carries commented variants for parallel execution
 (`MUTATION_TESTER_PARALLEL_PROCESSES`), for testing several file pairs, and for
 an incremental pull-request gate (`--since`/`--fail-fast`).
 
+Two more templates sit next to it: the [AI mutation gate](#ai-workflow-mutation-gate)
+and the scheduled [redundant test audit](#redundant-test-audit-scheduled-job).
+
 ## GitHub Actions (minimal inline workflow)
 
 The same thing, condensed to a copy-pasteable minimal workflow. It matches the
@@ -179,3 +182,31 @@ the template carries a commented step showing where to wire your agent CLI. Use
 it alongside the plain [5-minute CI template](#mutation-testing-in-ci-in-5-minutes):
 the AI gate adds the surviving-mutant worklist, the plain template is just the
 pass/fail gate.
+
+## Redundant test audit (scheduled job)
+
+The opt-in kill matrix (`--kill-matrix`) records, for every mutant, the tests
+that kill it, which makes it possible to list tests that add no protection. The
+method, the `jq` recipes and their limits are described under
+[Finding redundant tests](../readme.md#finding-redundant-tests) in the README.
+
+The gem ships a ready-to-copy workflow at
+[`examples/github_actions/redundant_tests.yml`](../examples/github_actions/redundant_tests.yml)
+(installed with the gem, so you have it offline). Copy it to
+`.github/workflows/redundant_tests.yml`, add the gem to your bundle, and edit the
+`EDIT:` lines. It:
+
+1. runs on a weekly schedule and on demand (`workflow_dispatch`), not on every
+   push: without the stop at the first failing test the run is slower than the
+   normal gate,
+2. runs `mutation_test --kill-matrix --json --glob ...` with `--minimum-score 0`,
+   so the mutation score never fails the audit while a broken run (failing
+   baseline, no file measured) still does,
+3. writes two lists to the GitHub job summary (`$GITHUB_STEP_SUMMARY`): tests
+   that kill no mutant, and tests whose every kill is shared with another test,
+   plus the number of mutants whose killers are unknown,
+4. uploads `kill_matrix.json` as an artifact.
+
+It is an audit, not a gate: the findings never fail the job. Treat the lists as
+candidates to review and remove one test at a time, because two listed tests can
+cover for each other.

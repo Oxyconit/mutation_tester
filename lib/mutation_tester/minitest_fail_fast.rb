@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative 'minitest_load_hook'
+
 module MutationTester
   module MinitestFailFast
     PLUGIN_NAME = :mutation_tester_fail_fast
@@ -12,11 +14,7 @@ module MutationTester
   end
 end
 
-begin
-  require 'minitest'
-rescue LoadError
-  Kernel.warn '[MutationTester] minitest is not loadable here; mutant runs will execute every test instead of stopping at the first failure.'
-else
+MutationTester::MinitestLoadHook.on_load do
   module MutationTester
     module MinitestFailFast
       class Reporter < Minitest::AbstractReporter

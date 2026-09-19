@@ -33,7 +33,8 @@ module MutationTester
       :show_file_path,
       :show_progress,
       :test_selection,
-      :fail_fast
+      :fail_fast,
+      :kill_matrix
 
     def initialize
       self.parallel_processes = ENV['MUTATION_TESTER_PARALLEL_PROCESSES'] || self.class.auto_parallel_processes
@@ -66,6 +67,7 @@ module MutationTester
       @show_progress = true
       @test_selection = true
       @fail_fast = false
+      @kill_matrix = false
     end
 
     def merge(options)

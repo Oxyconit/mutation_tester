@@ -2,7 +2,7 @@ require_relative 'progress_display'
 
 module MutationTester
   class Core
-    attr_reader :source_file, :spec_file, :mutations, :results, :config
+    attr_reader :source_file, :spec_file, :mutations, :results, :config, :tests
 
     def initialize(source_file, spec_file, config = MutationTester.configuration)
       @source_file = File.expand_path(source_file)
@@ -10,6 +10,7 @@ module MutationTester
       @config = config
       @mutations = []
       @results = []
+      @tests = []
       @parse_failed = false
       @shadow_aborted = false
       MutationRunner.recover_in_place_backup(@source_file)
@@ -18,6 +19,7 @@ module MutationTester
 
     def run
       print_header
+      return report_conflicting_modes if @config.kill_matrix && @config.fail_fast
       return false unless run_original_tests
 
       generate_mutations
@@ -98,12 +100,33 @@ module MutationTester
         return false
       end
       puts Rainbow('✓ Original tests passed').green
+      @tests = recorded_tests(result.tests)
+      return report_unrecorded_baseline if @config.kill_matrix && @tests.empty?
+
       @config.baseline_duration = baseline_elapsed
       true
     end
 
+    def report_conflicting_modes
+      puts Rainbow('❌ kill_matrix cannot be combined with fail_fast.').red
+      puts Rainbow('   fail_fast stops the run at the first surviving mutant, which would leave the kill matrix incomplete.').red
+      false
+    end
+
+    def report_unrecorded_baseline
+      puts Rainbow('❌ The kill matrix could not record a single test of the passing baseline run.').red
+      puts Rainbow('   Without the list of tests it cannot tell which tests kill a mutant, so the run is aborted instead of').red
+      puts Rainbow('   reporting an empty matrix. Usual causes: the test file defines no tests, or a plugin or hook replaces').red
+      puts Rainbow('   the test framework reporters or ends the process before the results are written.').red
+      false
+    end
+
     def monotonic_time
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def recorded_tests(entries)
+      Array(entries).uniq { |entry| entry[:id] }.sort_by { |entry| [entry[:line].to_i, entry[:id]] }
     end
 
     def replay_baseline_output(output)
@@ -186,11 +209,11 @@ module MutationTester
     def create_reporter(type)
       case type
       when :console
-        Reporters::ConsoleReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?)
+        Reporters::ConsoleReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?, tests: @tests)
       when :html
-        Reporters::HtmlReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?)
+        Reporters::HtmlReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?, tests: @tests)
       when :json
-        Reporters::JsonReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?)
+        Reporters::JsonReporter.new(@results, @source_file, @spec_file, @config, interrupted: interrupted?, tests: @tests)
       end
     end
 
@@ -198,7 +221,9 @@ module MutationTester
       TestCommand.new(
         @spec_file,
         use_bundle_exec: TestCommand.use_bundle_exec?(@source_file),
-        runner: @config.runner
+        runner: @config.runner,
+        record: @config.kill_matrix ? :all : nil,
+        record_root: @config.kill_matrix ? mutation_runner.recording_root : nil
       )
     end
 

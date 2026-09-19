@@ -218,6 +218,7 @@ module MutationTester
         status: :survived,
         description: mutation[:description]
       }.tap do |result|
+        result[:killed_by] = [] if @config.kill_matrix
         if unparseable?(mutation[:code])
           mark_stillborn(result)
         elsif strategy == :in_memory && mutation[:in_memory_safe] == false
@@ -370,17 +371,20 @@ module MutationTester
       runner = active_in_memory_runner
       return in_memory_worker_fallback(mutation, result, project_root, 'the in-memory worker is unavailable') unless runner&.ready?
 
-      outcome = runner.execute_in_memory(
-        source: mutation[:code],
-        path: @source_file,
-        timeout: @config.effective_timeout,
-        chdir: Dir.pwd
-      )
+      outcome, tests = recording_failed_tests do |recorder_env|
+        runner.execute_in_memory(
+          source: mutation[:code],
+          path: @source_file,
+          timeout: @config.effective_timeout,
+          chdir: Dir.pwd,
+          env: recorder_env
+        )
+      end
 
       if outcome.status == 'error'
         in_memory_apply_fallback(mutation, result, project_root, outcome.message || 'in-memory application failed')
       else
-        apply_outcome(result, TestCommand::Result.new(outcome.status == 'pass', outcome.status == 'timeout'))
+        apply_outcome(result, TestCommand::Result.new(outcome.status == 'pass', outcome.status == 'timeout', nil, tests))
       end
     rescue MutationTester::Error => e
       return in_memory_worker_fallback(mutation, result, project_root, e.message) if project_root
@@ -402,6 +406,7 @@ module MutationTester
 
     def subset_filters(mutation)
       return [] unless @config.test_selection
+      return [] if @config.kill_matrix
       return [] unless detect_test_framework(@spec_file) == :rspec
 
       method_name = mutation[:method_name].to_s
@@ -415,6 +420,10 @@ module MutationTester
 
     def detect_test_framework(spec_path)
       FrameworkDetector.detect(spec_path)
+    end
+
+    def recording_root
+      @recording_root ||= discoverable_project_root || File.dirname(@spec_file)
     end
 
     private
@@ -442,7 +451,7 @@ module MutationTester
         return 'the in-memory worker failed to preload the environment'
       end
 
-      preloaded, message = runner.preload(@spec_file, chdir: Dir.pwd, stop_on_first_failure: true)
+      preloaded, message = runner.preload(@spec_file, chdir: Dir.pwd, stop_on_first_failure: stop_on_first_failure?)
       unless preloaded
         runner.shutdown
         return "the spec file could not be preloaded (#{message})"
@@ -642,6 +651,17 @@ module MutationTester
         result[:status] = :killed
       end
       result[:kill_phase] = phase if result[:killed] && phase
+      result[:killed_by] = TestRecorder.failed_ids(outcome.tests) if @config.kill_matrix && result[:status] == :killed
+    end
+
+    def stop_on_first_failure?
+      !@config.kill_matrix
+    end
+
+    def recording_failed_tests(&block)
+      return [block.call(nil), nil] unless @config.kill_matrix
+
+      TestRecorder.capture(scope: :failures, root: recording_root, &block)
     end
 
     def mark_stillborn(result)
@@ -652,6 +672,7 @@ module MutationTester
       result[:killed] = false
       result[:timeout] = false
       result[:status] = :error
+      result[:killed_by] = [] if result.key?(:killed_by)
       result[:description] = "Error: #{error.message}"
     end
 
@@ -680,7 +701,9 @@ module MutationTester
         runner: @config.runner,
         example_filters: example_filters,
         worker_env_var: @config.worker_env_var,
-        stop_on_first_failure: true
+        stop_on_first_failure: stop_on_first_failure?,
+        record: @config.kill_matrix ? :failures : nil,
+        record_root: @config.kill_matrix ? recording_root : nil
       )
     end
   end

@@ -119,6 +119,21 @@ RSpec.describe MutationTester::TestCommand do
       expect(described_class.new('spec/foo_spec.rb', use_bundle_exec: false).argv).not_to include('--fail-fast')
       expect(described_class.new('test/foo_test.rb', use_bundle_exec: false).argv).not_to include('-r')
     end
+
+    it 'loads the rspec test recorder only when recording is requested' do
+      cmd = described_class.new('spec/foo_spec.rb', use_bundle_exec: false, record: :failures)
+
+      expect(cmd.argv).to eq(['rspec', 'spec/foo_spec.rb', '--require', MutationTester::TestRecorder::RSPEC_HOOK_PATH])
+      expect(File.exist?(MutationTester::TestRecorder::RSPEC_HOOK_PATH)).to be(true)
+      expect(described_class.new('spec/foo_spec.rb', use_bundle_exec: false).argv).not_to include('--require')
+    end
+
+    it 'preloads the minitest test recorder before the file when recording is requested' do
+      cmd = described_class.new('test/foo_test.rb', use_bundle_exec: false, record: :all)
+
+      expect(cmd.argv).to eq(['ruby', '-r', MutationTester::TestRecorder::MINITEST_HOOK_PATH, 'test/foo_test.rb'])
+      expect(File.exist?(MutationTester::TestRecorder::MINITEST_HOOK_PATH)).to be(true)
+    end
   end
 
   describe '#fork_execution?' do

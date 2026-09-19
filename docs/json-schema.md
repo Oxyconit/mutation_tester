@@ -73,12 +73,56 @@ history of changes.
 | `mutations[].timeout`          | boolean | Legacy passthrough flag from the runner (`true` only when the mutant timed out). Kept for backward compatibility; prefer `status`.                                                                                                                                                                                                              |
 | `mutations[].status`           | string  | One of the taxonomy statuses below. This is the authoritative per-mutant result.                                                                                                                                                                                                                                                                |
 | `mutations[].description`      | string  | Human-readable description of the mutation (for `error`, the failure message).                                                                                                                                                                                                                                                                  |
+| `kill_matrix`                  | boolean | Optional, additive (does not bump `schema_version`). Present and `true` only for a run with the opt-in `--kill-matrix` mode, which guarantees that every `mutations[].killed_by` list is complete. Absent otherwise. See [Kill matrix fields](#kill-matrix-fields-opt-in).                                                                       |
+| `tests[]`                      | array   | Optional, additive. Present only with `--kill-matrix`: every test of the unmutated baseline run, ordered by line. See [Kill matrix fields](#kill-matrix-fields-opt-in).                                                                                                                                                                       |
+| `mutations[].killed_by`        | array   | Optional, additive. Present only with `--kill-matrix`, on every mutant: the sorted `tests[].id` values of every test that failed under this mutant. See [Kill matrix fields](#kill-matrix-fields-opt-in).                                                                                                                                       |
 | `mutations[].diff`             | string  | Optional, additive (does not bump `schema_version`). Present only for `survived` and `timeout` mutants: a unified diff of the change with a few lines of surrounding context (`@@` hunk header, lines prefixed with `- `, `+ ` or two spaces). Falls back to a context-free `- `/`+ ` pair when the source file is not readable at report time. |
 
 **Status taxonomy** (`mutations[].status`): `killed` (tests caught it), `survived`
 (tests missed it), `timeout` (ran too long, scored as a kill), `stillborn`
 (unparseable, excluded from the score), `error` (runner failure, excluded from
 the score).
+
+## Kill matrix fields (opt-in)
+
+A normal run stops every mutant at its first failing test, so it cannot say which
+tests kill a mutant and emits none of the fields below. With `--kill-matrix`
+(`config.kill_matrix = true`) every mutant runs the full test file, on every
+runner and for both RSpec and Minitest, and the report gains:
+
+```json
+{
+  "schema_version": 1,
+  "interrupted": false,
+  "kill_matrix": true,
+  "tests": [
+    { "id": "InvoiceTest#test_rejects_negative_total", "name": "test_rejects_negative_total", "line": 12, "status": "passed" },
+    { "id": "InvoiceTest#test_total_sums_lines", "name": "test_total_sums_lines", "line": 20, "status": "passed" }
+  ],
+  "mutations": [
+    {
+      "id": 12,
+      "status": "killed",
+      "line": 41,
+      "killed_by": ["InvoiceTest#test_rejects_negative_total", "InvoiceTest#test_total_sums_lines"]
+    }
+  ]
+}
+```
+
+| Field                   | Type            | Description                                                                                                                                                                                                                                                              |
+|-------------------------|-----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `tests[].id`            | string          | Stable id of the test within the run. Minitest: `TestClass#test_name`. RSpec: the spec path relative to the project root plus the scoped example id, e.g. `spec/invoice_spec.rb[1:2:1]`, which `rspec` accepts as an argument from the project root. RSpec older than 3.3 has no scoped ids, so there the id is the file and line, e.g. `spec/invoice_spec.rb:12`. |
+| `tests[].name`          | string          | Human-readable name: the full example description for RSpec, the test method name for Minitest.                                                                                                                                                                          |
+| `tests[].line`          | integer or null | 1-based line where the test is defined in the test file. `null` when the framework does not report it or the example is defined in another file (RSpec shared examples).                                                                                                 |
+| `tests[].status`        | string          | `passed` or `skipped` (RSpec `pending`/`skip`/`xit`, Minitest `skip`) in the baseline run. The baseline must pass, so there is no `failed`.                                                                                                                              |
+| `mutations[].killed_by` | array of string | Sorted ids of every test that failed under the mutant. Always `[]` for `survived`, `stillborn`, `error` and `timeout`. Also `[]` for a `killed` mutant whose run failed without any test failing (typically the mutated file no longer loads, or an error outside a test). |
+
+An empty `killed_by` on a `killed` or `timeout` mutant means the killers are
+**unknown**, not that there are none: a consumer must never call a test redundant
+because of such a mutant. In the multi-file envelope the fields appear inside each
+`files[]` report. The redundancy recipes live under
+[Finding redundant tests](../readme.md#finding-redundant-tests) in the README.
 
 ## Extracting the score and the survived mutants
 
