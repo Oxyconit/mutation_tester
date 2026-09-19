@@ -86,7 +86,7 @@ module MutationTester
           end
 
           result = run_single_mutation(mutation, :in_memory)
-          progress_callback.call(mutation, index + 1) if progress_callback
+          progress_callback.call(mutation, index + 1, result) if progress_callback
           results << result
           break if stop_early?(result)
         end
@@ -113,7 +113,6 @@ module MutationTester
 
       warn "[MutationTester] In-memory execution selected (parallel, #{pool.size} preloaded workers, zero file writes per mutant)."
       announce_load_time_routing(mutations)
-      total = mutations.size
       completed_count = 0
       collected = []
       project_root = discoverable_project_root
@@ -122,9 +121,7 @@ module MutationTester
       report_progress = lambda do |_item, _index, result|
         completed_count += 1
         collected << result
-        if progress_callback && (completed_count.even? || completed_count == total)
-          progress_callback.call(nil, completed_count)
-        end
+        progress_callback.call(nil, completed_count, result) if progress_callback
         raise Parallel::Break if stop_early?(result)
       end
 
@@ -151,9 +148,7 @@ module MutationTester
       report_progress = lambda do |_item, _index, result|
         completed_count += 1
         collected << result
-        if progress_callback && (completed_count.even? || completed_count == total)
-          progress_callback.call(nil, completed_count)
-        end
+        progress_callback.call(nil, completed_count, result) if progress_callback
         raise Parallel::Break if stop_early?(result)
       end
 
@@ -180,7 +175,7 @@ module MutationTester
       results = []
       mutations.each_with_index do |mutation, index|
         result = run_single_mutation(mutation, :shadow, project_root)
-        progress_callback.call(mutation, index + 1) if progress_callback
+        progress_callback.call(mutation, index + 1, result) if progress_callback
         results << result
         break if stop_early?(result)
       end
@@ -194,7 +189,7 @@ module MutationTester
       results = []
       mutations.each_with_index do |mutation, index|
         result = run_single_mutation(mutation, :in_place)
-        progress_callback.call(mutation, index + 1) if progress_callback
+        progress_callback.call(mutation, index + 1, result) if progress_callback
         results << result
         break if stop_early?(result)
       end
@@ -479,8 +474,8 @@ module MutationTester
 
     def fall_back_to_file_based(reason, mutations, completed: 0, &progress_callback)
       announce_file_based_fallback(reason)
-      offset_callback = progress_callback && lambda do |mutation, index|
-        progress_callback.call(mutation, completed + index)
+      offset_callback = progress_callback && lambda do |mutation, index, result|
+        progress_callback.call(mutation, completed + index, result)
       end
       run_file_based_series(mutations, &offset_callback)
     end

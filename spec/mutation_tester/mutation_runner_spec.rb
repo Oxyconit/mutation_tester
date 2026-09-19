@@ -114,12 +114,16 @@ RSpec.describe MutationTester::MutationRunner do
       expect(counts.last).to eq(mutations.size)
     end
 
-    it 'reports intermediate counter values during the run' do
+    it 'reports every completed mutant so no result is lost to the live tallies' do
       counts = []
-      runner.run(mutations) { |_mutation, index| counts << index }
+      reported_ids = []
+      runner.run(mutations) do |_mutation, index, result|
+        counts << index
+        reported_ids << result[:id]
+      end
 
-      expect(counts).to eq([2, 4, 6])
-      expect(counts.any? { |c| c.positive? && c < mutations.size }).to be(true)
+      expect(counts).to eq((1..6).to_a)
+      expect(reported_ids).to match_array((1..6).to_a)
     end
   end
 
@@ -155,6 +159,16 @@ RSpec.describe MutationTester::MutationRunner do
       expect(runner).to have_received(:run_single_mutation).once
       expect(results.size).to eq(1)
       expect(results.first).to include(id: 1, status: :survived)
+    end
+
+    it 'hands each mutant result to the progress callback alongside its 1-based position' do
+      runner = build_runner(false)
+      stub_first_mutant_survives(runner)
+      reported = []
+
+      runner.run_in_place_series(mutations) { |_mutation, index, result| reported << [index, result[:status]] }
+
+      expect(reported).to eq([[1, :survived], [2, :killed], [3, :killed]])
     end
 
     it 'runs every mutation when fail_fast is disabled even though a mutant survives' do
@@ -1106,7 +1120,7 @@ RSpec.describe MutationTester::MutationRunner do
       end.to output(/finishing its share of mutants file-based/).to_stderr_from_any_process
 
       expect(results.map { |r| r[:status] }).to eq(%i[killed killed survived stillborn])
-      expect(counts).to eq([2, 4])
+      expect(counts).to eq([1, 2, 3, 4])
       expect(File.read(source_file)).to eq(original_source)
     end
 

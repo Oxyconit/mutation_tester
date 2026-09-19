@@ -161,8 +161,8 @@ module MutationTester
 
       progress_display = ProgressDisplay.new(@mutations.size, @config)
 
-      @results = mutation_runner.run(@mutations) do |mutation, index|
-        progress_display.update(mutation, index)
+      @results = mutation_runner.run(@mutations) do |mutation, index, result|
+        progress_display.update(mutation, index, result)
       end
 
       progress_display.finish

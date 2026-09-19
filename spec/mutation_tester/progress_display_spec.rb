@@ -51,6 +51,18 @@ RSpec.describe MutationTester::ProgressDisplay do
       expect(pd.current).to eq(4)
       expect(pd.current_mutation).to eq(mutation)
     end
+
+    it 'tallies survived and timed out results and leaves every other status uncounted' do
+      pd = described_class.new(10, config(show_progress: false), output_stream: StringIO.new)
+
+      %i[killed survived timeout stillborn survived error].each_with_index do |status, index|
+        pd.update(mutation, index + 1, { status: status })
+      end
+      pd.update(nil, 7)
+
+      expect(pd.survived).to eq(2)
+      expect(pd.timed_out).to eq(1)
+    end
   end
 
   describe '#render / #_render_internal' do
@@ -62,6 +74,100 @@ RSpec.describe MutationTester::ProgressDisplay do
 
       expect(io.string).to include('2/10')
       expect(io.string).to include('20.0%')
+    end
+
+    it 'shows the live survived and timed out tallies' do
+      pd, io = quiet_display(10)
+      pd.update(mutation, 1, { status: :survived })
+      pd.update(mutation, 2, { status: :timeout })
+      pd.update(mutation, 3, { status: :survived })
+
+      pd.send(:render)
+
+      expect(io.string).to include('2 survived, 1 timed out')
+    end
+
+    it 'extrapolates the remaining time from the throughput so far' do
+      now = 0.0
+      pd, io = quiet_display(20, clock: -> { now })
+      pd.update(mutation, 5)
+      now = 100.0
+
+      pd.send(:render)
+
+      expect(io.string).to include('elapsed 1m 40s, remaining ~5m 0s')
+    end
+
+    it 'shows elapsed time without an estimate before any mutant is processed' do
+      now = 0.0
+      pd, io = quiet_display(20, clock: -> { now })
+      now = 42.0
+
+      pd.send(:render)
+
+      expect(io.string).to include('elapsed 42s')
+      expect(io.string).not_to include('remaining')
+    end
+
+    it 'withholds the estimate while the sample is both small and young' do
+      now = 0.0
+      pd, io = quiet_display(20, clock: -> { now })
+      pd.update(mutation, 4)
+      now = 9.0
+
+      pd.send(:render)
+
+      expect(io.string).not_to include('remaining')
+    end
+
+    it 'shows the estimate once enough mutants are processed even in a young run' do
+      now = 0.0
+      pd, io = quiet_display(20, clock: -> { now })
+      pd.update(mutation, 5)
+      now = 5.0
+
+      pd.send(:render)
+
+      expect(io.string).to include('remaining ~15s')
+    end
+
+    it 'shows the estimate once the run is old enough even with a single processed mutant' do
+      now = 0.0
+      pd, io = quiet_display(4, clock: -> { now })
+      pd.update(mutation, 1)
+      now = 10.0
+
+      pd.send(:render)
+
+      expect(io.string).to include('remaining ~30s')
+    end
+
+    it 'drops the estimate when every mutant is processed' do
+      now = 0.0
+      pd, io = quiet_display(5, clock: -> { now })
+      pd.update(mutation, 5)
+      now = 60.0
+
+      pd.send(:render)
+
+      expect(io.string).not_to include('remaining')
+    end
+
+    it 'drops trailing segments so the line never wraps in a narrow terminal' do
+      narrow = Class.new(StringIO) do
+        def tty? = true
+        def winsize = [24, 56]
+      end.new
+      pd, io = quiet_display(10, stream: narrow)
+      pd.update(mutation, 2, { status: :survived })
+
+      pd.send(:render)
+
+      rendered = io.string.split("\r").last
+      expect(rendered).to include('2/10 processed')
+      expect(rendered).not_to include('elapsed')
+      expect(rendered).not_to include('survived')
+      expect(rendered.gsub(/\e\[[\d;]*m/, '').length).to be <= 55
     end
   end
 
@@ -129,13 +235,12 @@ RSpec.describe MutationTester::ProgressDisplay do
     end
   end
 
-  def quiet_display(total)
+  def quiet_display(total, stream: StringIO.new, **options)
     io = StringIO.new
-    pd = described_class.new(total, config(show_progress: true), output_stream: io)
+    pd = described_class.new(total, config(show_progress: true), output_stream: io, **options)
     pd.send(:stop_spinner)
-    fresh = StringIO.new
-    pd.instance_variable_set(:@output_stream, fresh)
-    [pd, fresh]
+    pd.instance_variable_set(:@output_stream, stream)
+    [pd, stream]
   end
 
   def assert_no_frame_after_completion(output)
@@ -143,7 +248,7 @@ RSpec.describe MutationTester::ProgressDisplay do
     expect(idx).not_to(be_nil, "expected a 'Completed in' line in: #{output.inspect}")
 
     tail = output[(idx + 'Completed in'.length)..]
-    expect(tail).not_to include('mutations processed')
+    expect(tail).not_to include('processed')
     spinner_frames.each do |frame|
       expect(tail).not_to(include(frame), "spinner frame #{frame.inspect} leaked after completion: #{output.inspect}")
     end

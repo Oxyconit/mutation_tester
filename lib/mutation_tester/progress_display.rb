@@ -1,14 +1,24 @@
 module MutationTester
   class ProgressDisplay
-    attr_reader :total, :current, :current_mutation
+    MONOTONIC_CLOCK = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    ANSI_STYLE = /\e\[[\d;]*m/
+    SEPARATOR = ' | '
+    ESTIMATE_MIN_PROCESSED = 5
+    ESTIMATE_MIN_ELAPSED = 10
 
-    def initialize(total, config, output_stream: $stdout.clone)
+    attr_reader :total, :current, :current_mutation, :survived, :timed_out
+
+    def initialize(total, config, output_stream: $stdout.clone, clock: MONOTONIC_CLOCK)
       @output_stream = output_stream
       @total = total
       @current = 0
       @current_mutation = nil
+      @survived = 0
+      @timed_out = 0
       @config = config
-      @start_time = Time.now
+      @clock = clock
+      @start_time = @clock.call
+      @rendered_length = 0
       @spinner_frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
       @spinner_index = 0
       @lock = Mutex.new
@@ -18,10 +28,12 @@ module MutationTester
       start_spinner if @config.show_progress
     end
 
-    def update(mutation, index)
+    def update(mutation, index, result = nil)
       @lock.synchronize do
         @current = index
         @current_mutation = mutation
+        @survived += 1 if result && result[:status] == :survived
+        @timed_out += 1 if result && result[:status] == :timeout
       end
     end
 
@@ -30,7 +42,7 @@ module MutationTester
         @stop_spinner = true
         if @config.show_progress
           clear_line
-          elapsed = Time.now - @start_time
+          elapsed = @clock.call - @start_time
           @output_stream.puts "  #{Rainbow("Completed in #{format_duration(elapsed)}").green}"
         end
       end
@@ -51,18 +63,55 @@ module MutationTester
 
     def _render_internal
       clear_line
-
-      progress = (@current.to_f / @total * 100).round(1)
-      progress_bar = create_progress_bar(progress)
-      spinner = @spinner_frames[@spinner_index]
-
-      mutation_info = @current_mutation ? " | #{@current_mutation[:type]} | line #{@current_mutation[:line]}" : ''
-
-      line = "#{Rainbow(spinner).magenta} [#{progress_bar}] #{Rainbow(progress.to_s + "%").bright} | " \
-             "#{Rainbow("#{@current}/#{@total}").cyan} mutations processed#{mutation_info}"
-
+      line = fitted_line
+      @rendered_length = visible_length(line)
       @output_stream.print line
       @output_stream.flush
+    end
+
+    def fitted_line
+      segments = line_segments
+      limit = line_limit
+      segments.pop while limit && segments.size > 1 && visible_length(segments.join(SEPARATOR)) > limit
+      segments.join(SEPARATOR)
+    end
+
+    def line_segments
+      progress = (@current.to_f / @total * 100).round(1)
+      spinner = @spinner_frames[@spinner_index]
+
+      [
+        "#{Rainbow(spinner).magenta} [#{create_progress_bar(progress)}] #{Rainbow("#{progress}%").bright}",
+        "#{Rainbow("#{@current}/#{@total}").cyan} processed",
+        time_segment(@clock.call - @start_time),
+        "#{Rainbow("#{@survived} survived").color(@survived.zero? ? :green : :red)}, #{@timed_out} timed out"
+      ]
+    end
+
+    def time_segment(elapsed)
+      segment = "elapsed #{format_duration(elapsed.floor)}"
+      remaining = estimated_remaining(elapsed)
+      remaining ? "#{segment}, remaining ~#{format_duration(remaining.ceil)}" : segment
+    end
+
+    def estimated_remaining(elapsed)
+      return if @current.zero? || @current >= @total
+      return if @current < ESTIMATE_MIN_PROCESSED && elapsed < ESTIMATE_MIN_ELAPSED
+
+      elapsed / @current * (@total - @current)
+    end
+
+    def visible_length(text)
+      text.gsub(ANSI_STYLE, '').length
+    end
+
+    def line_limit
+      return unless @output_stream.respond_to?(:winsize) && @output_stream.tty?
+
+      columns = @output_stream.winsize[1]
+      columns - 1 if columns.positive?
+    rescue SystemCallError
+      nil
     end
 
     def create_progress_bar(percentage)
@@ -75,7 +124,7 @@ module MutationTester
 
     def clear_line
       @output_stream.print "\r"
-      @output_stream.print ' ' * 100
+      @output_stream.print ' ' * @rendered_length
       @output_stream.print "\r"
     end
 
