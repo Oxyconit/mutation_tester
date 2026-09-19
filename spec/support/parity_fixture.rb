@@ -45,6 +45,14 @@ module ParityFixture
 
           amount
         end
+
+        def bulk_quantity?(quantity)
+          (10..99).cover?(quantity)
+        end
+
+        def summary
+          { vip: @vip }.merge(total: total, count: @item_ids.size)
+        end
       end
     end
   RUBY
@@ -206,6 +214,22 @@ module ParityFixture
 
       it 'rejects a non-positive charge with an exact message' do
         expect { pricer.charge(-1) }.to raise_error(ArgumentError, 'amount must be positive')
+      end
+
+      it 'treats the lowest and the highest bulk quantity as bulk' do
+        expect(pricer.bulk_quantity?(10)).to be(true)
+        expect(pricer.bulk_quantity?(99)).to be(true)
+      end
+
+      it 'does not treat a quantity just outside the bulk bounds as bulk' do
+        expect(pricer.bulk_quantity?(9)).to be(false)
+        expect(pricer.bulk_quantity?(100)).to be(false)
+      end
+
+      it 'summarizes the vip flag, the total and the item count' do
+        subject = pricer(vip: true)
+        subject.add(:pencil)
+        expect(subject.summary).to eq(vip: true, total: 1, count: 1)
       end
     end
   RUBY
